@@ -1,0 +1,18 @@
+{
+    "name": "Fabric POS Laravel React",
+    "dockerComposeFile": "../compose.yaml",
+    "service": "workspace",
+    "workspaceFolder": "/workspace",
+    "remoteUser": "developer",
+    "shutdownAction": "stopCompose",
+    "forwardPorts": [8000, 5173],
+    "postCreateCommand": "bash scripts/workspace/install.sh",
+    "customizations": {
+        "vscode": {
+            "extensions": [
+                "bmewburn.vscode-intelephense-client",
+                "bradlc.vscode-tailwindcss"
+            ]
+        }
+    }
+}
