@@ -277,7 +277,7 @@ test('vendor row payment settles bills, separates advances and updates payment h
     props = await save(page, dialog, 'Record vendor payment');
     expect(props.vendor_accounts.find((r: any) => r.id === other.id).account).toMatchObject({ payable: 0, advance: 3000 });
     await close(dialog, 'Pay vendor');
-    await expect(card(page, 'Recent vendor payments').getByText('Bill settled plus advance', { exact: true })).toBeVisible();
+    await expect(card(page, 'Recent vendor payments').locator('tbody tr').filter({ hasText: vendorName }).getByText('Bill settled plus advance', { exact: true })).toBeVisible();
     cashResponse = page.waitForResponse((r) => r.url().endsWith('/fabric/cash-bank') && r.headers()['x-inertia'] === 'true');
     await page.getByRole('link', { name: 'Cash / Bank', exact: true }).click();
     expect((await (await cashResponse).json()).props.account_balances.find((r: any) => r.name === 'Cash').balance).toBe(before - 25500);

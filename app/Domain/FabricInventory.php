@@ -956,6 +956,30 @@ final class FabricInventory
         return ['discount' => $discount, 'snapshots' => $snapshots];
     }
 
+    /** @param array<int,array<string,mixed>> $lines
+     * @return array{total:int,discount:int,gross:int,line_totals:array<int,int>}
+     */
+    public static function saleQuote(array $lines): array
+    {
+        $total = $discount = $grossTotal = 0;
+        $lineTotals = [];
+        foreach ($lines as $line) {
+            $roll = DB::table('fabric_rolls')->where('id', (int) $line['roll_id'])->firstOrFail();
+            $product = DB::table('fabric_products')->where('active', true)->where('id', $roll->product_id)->firstOrFail();
+            $quantity = self::qty($line['quantity'], $product->unit);
+            $rate = isset($line['unit_price']) && $line['unit_price'] !== '' ? Pricing::minor($line['unit_price']) : (int) $roll->selling_price;
+            $gross = self::amountForQty($rate, $quantity);
+            $promo = self::promotionDiscount($product, (int) $roll->color_id, $gross, now());
+            $lineDiscount = $promo['discount'] + Pricing::minor($line['manual_discount'] ?? '0');
+            if ($lineDiscount > $gross) self::fail('Discount exceeds the line amount.');
+            $grossTotal += $gross;
+            $discount += $lineDiscount;
+            $total += $gross - $lineDiscount;
+            $lineTotals[] = $gross - $lineDiscount;
+        }
+        return ['total' => $total, 'discount' => $discount, 'gross' => $grossTotal, 'line_totals' => $lineTotals];
+    }
+
     /** @param array<string,mixed> $data */
     public static function postSale(array $data, string $role): int
     {
@@ -1009,6 +1033,9 @@ final class FabricInventory
                 $grossTotal += $gross;
                 $discountTotal += $discount;
                 $netTotal += $net;
+            }
+            if (isset($data['quoted_total']) && (int) $data['quoted_total'] !== $netTotal) {
+                self::fail('Pricing changed. Review the refreshed total before posting the sale.', 'quoted_total');
             }
             $payments = $data['payments'] ?? [];
             $paid = 0;

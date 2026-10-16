@@ -20,6 +20,8 @@ Route::middleware(['auth', FabricAccess::class])->group(function () {
     Route::post('/fabric/action/{action}/{id?}', [FabricController::class, 'action'])->middleware('throttle:120,1');
     Route::get('/fabric/barcode/{code}', [FabricController::class, 'barcode'])->where('code', '.*');
     Route::get('/fabric/barcode-image/{id}', [FabricController::class, 'barcodeImage'])->whereNumber('id');
+    Route::get('/fabric/sale-quote', [FabricController::class, 'saleQuote']);
+    Route::post('/fabric/whatsapp/authorize', [FabricController::class, 'authorizeWhatsApp'])->middleware('throttle:20,1');
     Route::get('/fabric/export/{type}', [FabricController::class, 'export']);
     Route::get('/fabric/document/{type}/{id}', [FabricController::class, 'document']);
     Route::get('/fabric/expense-receipt/{id}', [FabricController::class, 'expenseReceipt']);

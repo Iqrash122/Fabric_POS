@@ -27,3 +27,10 @@ yarn-error.log
 /.nova
 /.vscode
 /.zed
+
+# Local messaging credentials, session profiles and generated dependencies
+/whatsapp-server/node_modules/
+/whatsapp-server/.wwebjs_auth/
+/whatsapp-server/.wwebjs_cache/
+/whatsapp-server/uploads/
+/storage/app/private/whatsapp-server.key

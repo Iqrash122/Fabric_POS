@@ -14,9 +14,21 @@ const qrcode = require('qrcode');
 const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
 
 const app = express();
-const PORT = 3001;
+const crypto = require('node:crypto');
+const { authorizationVerifier } = require('./authorization');
+const keyPath = path.join(__dirname, '../storage/app/private/whatsapp-server.key');
+fs.mkdirSync(path.dirname(keyPath), { recursive: true });
+try { fs.writeFileSync(keyPath, crypto.randomBytes(32).toString('hex'), { flag: 'wx', mode: 0o600 }); } catch (error) { if (error.code !== 'EEXIST') throw error; }
+const verifySend = authorizationVerifier(fs.readFileSync(keyPath, 'utf8').trim());
+const PORT = Number(process.env.WHATSAPP_PORT || 3001);
+const { ClientLifecycle, preservingAuth, browserExecutable } = require('./lifecycle');
 
-app.use(cors({ origin: '*' }));
+const allowedOrigins = (process.env.WHATSAPP_ALLOWED_ORIGINS || 'http://127.0.0.1:8000,http://localhost:8000,http://127.0.0.1:8001,http://localhost:8001').split(',');
+app.use((req, res, next) => {
+    if (req.headers.origin && !allowedOrigins.includes(req.headers.origin)) return res.status(403).json({ error: 'Origin not allowed.' });
+    next();
+});
+app.use(cors({ origin: allowedOrigins }));
 app.use(express.json({ limit: '50mb' }));
 
 // ─── Media upload storage ────────────────────────────────────────────────────
@@ -50,105 +62,37 @@ let sendJob = {
 };
 
 // ─── Initialize WhatsApp Client ───────────────────────────────────────────────
-let isInitializing = false;
-
-async function initClient() {
-    if (isInitializing) {
-        console.log('[WA] Initialization already in progress, skipping duplicate call.');
-        return;
-    }
-    isInitializing = true;
-
-    if (whatsappClient) {
-        try {
-            console.log('[WA] Destroying existing client instance...');
-            await whatsappClient.destroy();
-        } catch (e) {
-            console.warn('[WA] Error destroying client:', e.message);
-        }
-        whatsappClient = null;
-    }
-
-    console.log('[WA] Initializing WhatsApp client...');
-    clientStatus = 'reconnecting';
-    qrCodeDataUrl = null;
-
+const lifecycle = new ClientLifecycle((recover) => {
+    const Auth = preservingAuth(LocalAuth, message => lifecycle.state('disconnected', message));
     const client = new Client({
-        authStrategy: new LocalAuth({ dataPath: path.join(__dirname, '.wwebjs_auth') }),
+        authStrategy: new Auth({ dataPath: path.join(__dirname, '.wwebjs_auth') }),
         puppeteer: {
             headless: true,
-            args: [
-                '--no-sandbox',
-                '--disable-setuid-sandbox',
-                '--disable-dev-shm-usage',
-                '--disable-accelerated-2d-canvas',
-                '--no-first-run',
-                '--no-zygote',
-                '--disable-gpu',
-            ],
+            executablePath: browserExecutable(),
+            args: ['--disable-dev-shm-usage'],
         },
     });
-
-    client.on('qr', async (qr) => {
-        console.log('\n[WA] ═══════════════ QR CODE RECEIVED ═══════════════');
-        console.log('[WA] Scan this QR code with WhatsApp on your phone:');
-        clientStatus = 'qr-pending';
+    // Upstream frame navigation invokes inject asynchronously; catch its rejection
+    // here so a navigation race does not become an unhandled process rejection.
+    const inject = client.inject.bind(client);
+    client.inject = async (...args) => {
+        if (client.authStrategy.cleanupFailed || (client.pupBrowser && !client.pupBrowser.isConnected())) return;
+        try { return await inject(...args); }
+        catch (error) { if (lifecycle.client === client) recover(error); }
+    };
+    client.on('qr', async qr => {
         try {
-            // Print small QR in terminal
-            qrcode.toString(qr, { type: 'terminal', small: true }, (_err, str) => {
-                if (str) console.log(str);
-            });
-            // Generate Data URL for browser display
-            qrCodeDataUrl = await qrcode.toDataURL(qr);
-        } catch (err) {
-            console.error('[WA] QR generation error:', err);
-        }
-        console.log('[WA] ══════════════════════════════════════════════════\n');
+            const data = await qrcode.toDataURL(qr);
+            if (lifecycle.client === client && lifecycle.status === 'qr-pending') qrCodeDataUrl = data;
+        } catch (error) { recover(error); }
     });
-
-    client.on('ready', () => {
-        console.log('[WA] ✅ WhatsApp connected successfully!');
-        clientStatus = 'connected';
-        qrCodeDataUrl = null;
-        isInitializing = false;
-    });
-
-    client.on('authenticated', () => {
-        console.log('[WA] ✅ Authenticated successfully');
-        isInitializing = false;
-    });
-
-    client.on('auth_failure', (msg) => {
-        console.error('[WA] ❌ Auth failed:', msg);
-        clientStatus = 'disconnected';
-        isInitializing = false;
-    });
-
-    client.on('disconnected', (reason) => {
-        console.warn('[WA] ⚠️ Disconnected:', reason);
-        clientStatus = 'disconnected';
-        qrCodeDataUrl = null;
-        isInitializing = false;
-        // Auto-reconnect after 8 seconds
-        setTimeout(() => {
-            initClient().catch(console.error);
-        }, 8000);
-    });
-
-    client.initialize().then(() => {
-        isInitializing = false;
-    }).catch((err) => {
-        console.error('[WA] ❌ Initialize error:', err.message);
-        clientStatus = 'disconnected';
-        isInitializing = false;
-        // Clean up broken lock/auth if needed
-        setTimeout(() => {
-            initClient().catch(console.error);
-        }, 12000);
-    });
-
     whatsappClient = client;
-}
+    return client;
+}, { onState: status => {
+    clientStatus = status;
+    if (status !== 'qr-pending') qrCodeDataUrl = null;
+} });
+const initClient = () => lifecycle.start();
 
 // ─── Helper: normalize phone to WhatsApp ID ───────────────────────────────────
 function toWaId(phone) {
@@ -172,6 +116,7 @@ app.get('/status', (_req, res) => {
         status: clientStatus,
         connected: clientStatus === 'connected',
         hasQr: !!qrCodeDataUrl,
+        error: lifecycle.error,
     });
 });
 
@@ -185,7 +130,8 @@ app.get('/qr', (_req, res) => {
 
 // POST /reconnect — Force re-initialize
 app.post('/reconnect', (_req, res) => {
-    initClient();
+    if (sendJob.active) return res.status(409).json({ error: 'Wait for the current send job to finish.' });
+    initClient().catch(error => lifecycle.retry(error));
     res.json({ message: 'Reconnecting...' });
 });
 
@@ -201,7 +147,7 @@ app.post('/upload-media', upload.single('file'), (req, res) => {
 });
 
 // POST /send-bulk — Start bulk send job
-// Body: { phones: ["+923001234567", ...], message: "Hello!", mediaFilename: "media_xxx.jpg" (optional) }
+// Body: short-lived signed payload returned by the authenticated Laravel authorization endpoint.
 app.post('/send-bulk', async (req, res) => {
     if (clientStatus !== 'connected') {
         return res.status(400).json({ error: 'WhatsApp is not connected. Please scan QR code first.' });
@@ -210,13 +156,28 @@ app.post('/send-bulk', async (req, res) => {
         return res.status(400).json({ error: 'A send job is already running. Please wait.' });
     }
 
-    const { phones, message, mediaFilename } = req.body;
+    let authorized;
+    try { authorized = verifySend(req.body); }
+    catch (error) { return res.status(403).json({ error: error.message }); }
+    const { phones, message, mediaFilename } = authorized;
+    if (typeof message !== 'string' || (mediaFilename != null && typeof mediaFilename !== 'string')) return res.status(422).json({ error: 'Invalid message or attachment.' });
+    if (Array.isArray(phones) && (phones.length > 500 || phones.some(phone => typeof phone !== 'string' || !/^[+0-9 ()-]{7,25}$/.test(phone)))) return res.status(422).json({ error: 'Enter valid phone numbers; maximum 500 recipients.' });
 
     if (!phones || !Array.isArray(phones) || phones.length === 0) {
         return res.status(400).json({ error: 'No phone numbers provided.' });
     }
     if (!message || message.trim() === '') {
         return res.status(400).json({ error: 'Message cannot be empty.' });
+    }
+
+    // Validate the requested attachment before accepting any messages.
+    let media = null;
+    if (mediaFilename) {
+        try {
+            const mediaPath = path.join(uploadDir, path.basename(mediaFilename));
+            if (!fs.existsSync(mediaPath)) throw new Error('Attachment is missing. Upload it again.');
+            media = MessageMedia.fromFilePath(mediaPath);
+        } catch (error) { return res.status(422).json({ error: error.message }); }
     }
 
     // Initialize job
@@ -232,19 +193,6 @@ app.post('/send-bulk', async (req, res) => {
     };
 
     res.json({ message: `Bulk send started for ${phones.length} recipients.`, total: phones.length });
-
-    // Load media if provided
-    let media = null;
-    if (mediaFilename) {
-        const mediaPath = path.join(uploadDir, mediaFilename);
-        if (fs.existsSync(mediaPath)) {
-            try {
-                media = MessageMedia.fromFilePath(mediaPath);
-            } catch (err) {
-                console.error('[WA] Media load error:', err.message);
-            }
-        }
-    }
 
     // Send in background
     (async () => {
@@ -265,7 +213,7 @@ app.post('/send-bulk', async (req, res) => {
                 sendJob.log.push({ phone, status: 'failed', error: err.message, time: new Date().toISOString() });
                 console.error(`[WA] ❌ Failed to send to ${phone}:`, err.message);
             }
-            // Delay between messages to avoid spam detection (1.5 - 3 seconds)
+            // Pace the serial queue; this is not a delivery or account-limit guarantee.
             const delay = 1500 + Math.floor(Math.random() * 1500);
             await sleep(delay);
         }
@@ -292,7 +240,7 @@ app.get('/progress', (_req, res) => {
 
 // DELETE /uploads/:filename — Clean up uploaded media
 app.delete('/uploads/:filename', (req, res) => {
-    const filePath = path.join(uploadDir, req.params.filename);
+    const filePath = path.join(uploadDir, path.basename(req.params.filename));
     if (fs.existsSync(filePath)) {
         fs.unlinkSync(filePath);
         res.json({ message: 'File deleted.' });
@@ -302,7 +250,7 @@ app.delete('/uploads/:filename', (req, res) => {
 });
 
 // ─── Start Server ─────────────────────────────────────────────────────────────
-const server = app.listen(PORT, () => {
+const server = app.listen(PORT, '127.0.0.1', () => {
     console.log(`\n🟢 Fabric WhatsApp Server running on http://localhost:${PORT}`);
     console.log('   Initializing WhatsApp client...\n');
     initClient().catch(console.error);
@@ -311,9 +259,7 @@ const server = app.listen(PORT, () => {
 // Graceful shutdown
 const shutdown = async () => {
     console.log('\n[WA] Shutting down WhatsApp server...');
-    if (whatsappClient) {
-        try { await whatsappClient.destroy(); } catch (_) {}
-    }
+    await lifecycle.stop();
     server.close(() => {
         console.log('[WA] Server closed cleanly.');
         process.exit(0);

@@ -1602,3 +1602,9 @@ body {
     .fabric-role { display: none; }
     .fabric-table-wrap td { grid-template-columns: 82px minmax(0, 1fr); gap: 8px; }
 }
+
+/* Labeled purchase controls must shrink within drawers and small viewports. */
+.purchase-line > .fabric-field { min-width: 0; }
+@media (max-width: 720px) {
+    .purchase-line > .fabric-field:first-child { grid-column: 1 / -1; }
+}

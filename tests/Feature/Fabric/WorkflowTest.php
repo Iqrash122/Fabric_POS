@@ -563,4 +563,64 @@ final class WorkflowTest extends TestCase
         $this->assertSame(2, (int) DB::table('fabric_customer_credits')->where('customer_id', $customer->id)->sum('amount'));
     }
 
+
+    public function test_quote_applies_campaign_and_matches_posted_sale_without_mutating_stock(): void
+    {
+        $purchase = $this->purchase();
+        $roll = $this->receive($purchase['bill'], $purchase['line']);
+        FabricInventory::savePromotion(['name' => 'Eid 20%', 'percent' => '20', 'starts_at' => now()->subDay()->toIso8601String(), 'ends_at' => now()->addDay()->toIso8601String(), 'priority' => 1, 'stackable' => false, 'active' => true, 'targets' => []]);
+        $lines = [['roll_id' => $roll, 'quantity' => '3', 'unit_price' => '1000', 'manual_discount' => '0']];
+        $this->getJson('/fabric/sale-quote?'.http_build_query(['lines' => $lines]))->assertOk()->assertJson(['gross' => 300000, 'discount' => 60000, 'total' => 240000]);
+        $this->assertSame(40000, (int) DB::table('fabric_rolls')->where('id', $roll)->value('current_qty_milli'));
+        $sale = FabricInventory::postSale(['sale_at' => now()->toIso8601String(), 'lines' => $lines, 'payments' => [['account_id' => $this->cashId, 'amount' => '2400']], 'idempotency_key' => (string) Str::uuid()], 'owner');
+        $this->assertSame(240000, (int) DB::table('fabric_sales')->where('id', $sale)->value('total'));
+        $this->assertSame(37000, (int) DB::table('fabric_rolls')->where('id', $roll)->value('current_qty_milli'));
+    }
+
+    public function test_report_display_and_export_use_business_names_and_consistent_units(): void
+    {
+        $purchase = $this->purchase('200', '10');
+        $this->receive($purchase['bill'], $purchase['line'], '20', 'BLUE-ROLL');
+        $this->get('/fabric/reports?report=purchases')->assertOk()->assertInertia(fn ($page) => $page
+            ->where('report_display_rows.0.Vendor', 'Textile House')
+            ->where('report_display_rows.0.Subtotal (PKR)', '2000.00')
+            ->where('report_display_rows.0.Total (PKR)', '2000.00'));
+        $this->get('/fabric/reports?report=stock')->assertOk()->assertInertia(fn ($page) => $page
+            ->where('report_display_rows.0.Fabric', 'Premium Cotton')
+            ->where('report_display_rows.0.Current quantity', '20.000')
+            ->where('report_display_rows.0.Stock value (PKR)', '200.00'));
+        $csv = $this->get('/fabric/export/purchases')->assertOk()->streamedContent();
+        $this->assertStringContainsString('Textile House', $csv);
+        $this->assertStringContainsString('2000.00', $csv);
+        $this->assertStringNotContainsString('vendor_id', $csv);
+        $this->assertStringNotContainsString('idempotency_key', $csv);
+    }
+
+    public function test_two_colors_keep_distinct_rolls_barcodes_stock_and_invoice_snapshots(): void
+    {
+        $colors = [];
+        foreach (['Blue', 'Red'] as $name) $colors[] = DB::table('fabric_colors')->insertGetId(['name' => $name, 'active' => true, 'created_at' => now(), 'updated_at' => now()]);
+        $bill = FabricInventory::createPurchase(['vendor_id' => $this->vendorId, 'bill_date' => now()->toIso8601String(), 'lines' => array_map(fn ($color) => ['product_id' => $this->productId, 'color_id' => $color, 'quantity' => '10', 'purchase_rate' => '10'], $colors)]);
+        FabricInventory::postPurchase($bill);
+        $purchaseLines = DB::table('fabric_purchase_lines')->where('purchase_bill_id', $bill)->orderBy('id')->get();
+        $rolls = [];
+        foreach ($purchaseLines as $index => $line) $rolls[] = $this->receive($bill, (int) $line->id, '10', 'COLOR-'.($index + 1));
+        $blue = DB::table('fabric_rolls')->where('id', $rolls[0])->first();
+        $red = DB::table('fabric_rolls')->where('id', $rolls[1])->first();
+        $this->assertNotSame($blue->barcode, $red->barcode);
+        foreach ([$blue, $red] as $index => $roll) $this->getJson('/fabric/barcode/'.urlencode($roll->barcode))->assertOk()->assertJsonPath('record.color_id', $colors[$index]);
+        $sale = $this->sale($rolls[0], '2', null, [['account_id' => $this->cashId, 'amount' => '40']]);
+        $this->assertSame(8000, (int) DB::table('fabric_rolls')->where('id', $rolls[0])->value('current_qty_milli'));
+        $this->assertSame(10000, (int) DB::table('fabric_rolls')->where('id', $rolls[1])->value('current_qty_milli'));
+        $this->assertSame('Blue', DB::table('fabric_sale_lines')->where('sale_id', $sale)->value('color_name_snapshot'));
+        $this->get('/fabric/document/thermal/'.$sale)->assertOk()->assertSee('Blue')->assertDontSee('Unspecified');
+    }
+
+    public function test_whatsapp_authorization_rechecks_consent_and_staff_permissions(): void
+    {
+        $customer = $this->customer();
+        $this->postJson('/fabric/whatsapp/authorize', ['customer_ids' => [$customer->id], 'message' => 'Test only'])->assertStatus(422);
+        $cashier = User::factory()->create(['is_owner' => false, 'fabric_role' => 'cashier']);
+        $this->actingAs($cashier)->postJson('/fabric/whatsapp/authorize', ['customer_ids' => [$customer->id], 'message' => 'Test only'])->assertForbidden();
+    }
 }

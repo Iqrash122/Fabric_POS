@@ -106,3 +106,18 @@ test('fabric POS keeps primary checkout actions accessible on desktop and mobile
     await expect(page.locator('.fabric-mobile-nav').getByRole('link', { name: /POS/ })).toBeVisible();
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBeTruthy();
 });
+
+for (const width of [320, 768, 1280, 1920]) {
+    test(`all pages fit ${width}px viewport`, async ({ page }) => {
+        const errors: string[] = [];
+        page.on('pageerror', error => errors.push(error.message));
+        await login(page);
+        await page.setViewportSize({ width, height: 1000 });
+        for (const [slug, title] of sections) {
+            await page.goto(slug ? `/fabric/${slug}` : '/fabric');
+            await expect(page.getByRole('heading', { level: 1, name: title })).toBeVisible();
+            expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), title).toBeTruthy();
+        }
+        expect(errors).toEqual([]);
+    });
+}

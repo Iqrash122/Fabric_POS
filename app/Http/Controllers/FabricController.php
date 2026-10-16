@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Domain\FabricDocuments;
+use App\Domain\FabricReportPresenter;
 use App\Domain\FabricInventory;
 use App\Models\BusinessSetting;
 use App\Models\Customer;
@@ -224,6 +225,8 @@ final class FabricController extends Controller
             $data['reservations'] = DB::table('fabric_reservations')->where('status', 'active')->orderBy('expires_at')->get();
             $data['stock_counts'] = DB::table('fabric_stock_counts')->orderByDesc('id')->limit(30)->get();
         } elseif ($section === 'returns') {
+            $data['purchase_bills'] = DB::table('fabric_purchase_bills')->where('state', 'posted')->orderByDesc('id')->get();
+            $data['return_rolls'] = DB::table('fabric_rolls')->join('fabric_purchase_lines', 'fabric_purchase_lines.id', '=', 'fabric_rolls.purchase_line_id')->join('fabric_products', 'fabric_products.id', '=', 'fabric_rolls.product_id')->join('fabric_colors', 'fabric_colors.id', '=', 'fabric_rolls.color_id')->where('fabric_rolls.current_qty_milli', '>', 0)->select('fabric_rolls.*', 'fabric_purchase_lines.purchase_bill_id', 'fabric_products.name as product_name', 'fabric_colors.name as color_name')->get();
             $data['customer_returns'] = DB::table('fabric_returns')->orderByDesc('id')->limit(100)->get();
             $data['vendor_returns'] = DB::table('fabric_vendor_returns')->orderByDesc('id')->limit(100)->get();
             $data['sale_lines'] = DB::table('fabric_sale_lines')
@@ -239,6 +242,7 @@ final class FabricController extends Controller
             }
             $data['account_balances'] = $accounts;
             $data['account_entries'] = DB::table('fabric_account_entries')->orderByDesc('id')->limit(150)->get();
+            $data['account_entry_rows'] = FabricReportPresenter::rows('cash', $data['account_entries']->all());
             $data['transfers'] = DB::table('fabric_transfers')->orderByDesc('id')->limit(50)->get();
         } elseif ($section === 'expenses') {
             $data['expenses'] = DB::table('fabric_expenses')->orderByDesc('effective_at')->limit(100)->get();
@@ -264,6 +268,7 @@ final class FabricController extends Controller
             $type = (string) $request->input('report', 'sales');
             $data['report_type'] = $type;
             $data['report_rows'] = $this->reportRows($type, $request);
+            $data['report_display_rows'] = FabricReportPresenter::rows($type, $data['report_rows']);
         } elseif ($section === 'settings') {
             $data['opening_balances'] = DB::table('fabric_opening_balances')->orderByDesc('id')->limit(100)->get()
                 ->map(function ($row) {
@@ -467,7 +472,7 @@ final class FabricController extends Controller
                 FabricInventory::settleInstallment((int) $id, (int) $request->validate(['payment_id' => 'required|integer'])['payment_id']);
                 break;
             case 'sale':
-                $data = $request->validate(['customer_id' => 'nullable|integer', 'sale_at' => 'required', 'credit_authorized' => 'sometimes|boolean', 'manual_discount_reason' => 'nullable|string|max:2000', 'idempotency_key' => 'required|string|max:120', 'lines' => 'required|array|min:1', 'lines.*.roll_id' => 'required|integer', 'lines.*.quantity' => 'required', 'lines.*.unit_price' => 'nullable', 'lines.*.manual_discount' => 'nullable', 'payments' => 'sometimes|array', 'payments.*.account_id' => 'required_with:payments|integer', 'payments.*.amount' => 'required_with:payments', 'payments.*.external_reference' => 'nullable|string|max:120']);
+                $data = $request->validate(['customer_id' => 'nullable|integer', 'sale_at' => 'required', 'quoted_total' => 'nullable|integer|min:0', 'credit_authorized' => 'sometimes|boolean', 'manual_discount_reason' => 'nullable|string|max:2000', 'idempotency_key' => 'required|string|max:120', 'lines' => 'required|array|min:1', 'lines.*.roll_id' => 'required|integer', 'lines.*.quantity' => 'required', 'lines.*.unit_price' => 'nullable', 'lines.*.manual_discount' => 'nullable', 'payments' => 'sometimes|array', 'payments.*.account_id' => 'required_with:payments|integer', 'payments.*.amount' => 'required_with:payments', 'payments.*.external_reference' => 'nullable|string|max:120']);
                 $saleId = FabricInventory::postSale($data, $role);
                 return back()->with('success', 'Sale invoice posted successfully.')->with('last_sale_id', $saleId);
             case 'customer-receipt':
@@ -486,12 +491,12 @@ final class FabricController extends Controller
                 break;
             case 'customer-return':
                 abort_unless($manager, 403);
-                $data = $request->validate(['sale_id' => 'required|integer', 'effective_at' => 'required', 'resolution' => 'required|in:credit,refund,reduce_balance', 'reason' => 'required|string|max:2000', 'account_id' => 'nullable|integer', 'idempotency_key' => 'required|string|max:120', 'lines' => 'required|array|min:1', 'lines.*.sale_line_id' => 'required|integer', 'lines.*.quantity' => 'required', 'lines.*.condition' => 'required|in:resalable,damaged']);
+                $data = $request->validate(['sale_id' => 'required|integer', 'effective_at' => 'required', 'resolution' => 'required|in:credit,refund,reduce_balance', 'reason' => 'required|string|max:2000', 'account_id' => 'nullable|integer', 'idempotency_key' => 'required|string|max:120', 'lines' => 'required|array|min:1', 'lines.*.sale_line_id' => 'required|integer', 'lines.*.quantity' => 'required', 'lines.*.condition' => 'required|in:resalable,damaged'], [], ['sale_id' => 'sale invoice', 'lines.*.sale_line_id' => 'sale item', 'lines.*.quantity' => 'return quantity', 'lines.*.condition' => 'return condition', 'account_id' => 'refund account']);
                 FabricInventory::customerReturn($data);
                 break;
             case 'vendor-return':
                 abort_unless($manager, 403);
-                $data = $request->validate(['vendor_id' => 'required|integer', 'purchase_bill_id' => 'required|integer', 'effective_at' => 'required', 'reason' => 'required|string|max:2000', 'idempotency_key' => 'required|string|max:120', 'lines' => 'required|array|min:1', 'lines.*.roll_id' => 'required|integer', 'lines.*.quantity' => 'required']);
+                $data = $request->validate(['vendor_id' => 'required|integer', 'purchase_bill_id' => 'required|integer', 'effective_at' => 'required', 'reason' => 'required|string|max:2000', 'idempotency_key' => 'required|string|max:120', 'lines' => 'required|array|min:1', 'lines.*.roll_id' => 'required|integer', 'lines.*.quantity' => 'required'], [], ['vendor_id' => 'vendor', 'purchase_bill_id' => 'purchase bill', 'lines.*.roll_id' => 'roll', 'lines.*.quantity' => 'return quantity']);
                 FabricInventory::vendorReturn($data);
                 break;
             case 'expense':
@@ -998,7 +1003,7 @@ final class FabricController extends Controller
         abort_unless(in_array($this->role($request), ['owner', 'manager'], true), 403);
         $format = strtolower((string) $request->input('format', 'csv'));
         abort_unless(in_array($format, ['csv', 'xlsx'], true), 404);
-        $rows = array_map(static fn ($row): array => (array) $row, $this->reportRows($type, $request));
+        $rows = FabricReportPresenter::rows($type, $this->reportRows($type, $request));
         $path = FabricDocuments::writeExport($rows, 'fabric-'.$type, $format);
         $name = 'fabric-'.$type.'-'.now()->format('Ymd-His').'.'.$format;
 
@@ -1024,6 +1029,31 @@ final class FabricController extends Controller
         }
 
         return FabricDocuments::pdf($type, $id);
+    }
+
+    public function authorizeWhatsApp(Request $request): JsonResponse
+    {
+        abort_unless(in_array($this->role($request), ['owner', 'manager'], true), 403);
+        $data = $request->validate(['customer_ids' => 'required|array|min:1|max:500', 'customer_ids.*' => 'required|integer|distinct', 'message' => 'required|string|max:5000', 'mediaFilename' => ['nullable', 'string', 'regex:/^media_[a-zA-Z0-9_.-]+$/']]);
+        $customers = DB::table('customers')->where('active', true)->whereIn('id', $data['customer_ids'])->get();
+        abort_unless($customers->count() === count($data['customer_ids']), 422, 'Select active customers.');
+        $phones = [];
+        foreach ($customers as $customer) {
+            $phone = $customer->normalized_whatsapp ?: $customer->normalized_phone;
+            $consented = $phone && DB::table('fabric_marketing_contacts')->where('phone', $phone)->where('whatsapp_consent', true)->where('opted_out', false)->exists();
+            abort_unless($consented, 422, 'Record WhatsApp consent in Marketing for every selected recipient. Opted-out contacts cannot receive messages.');
+            $phones[] = $phone;
+        }
+        $keyPath = storage_path('app/private/whatsapp-server.key');
+        abort_unless(is_file($keyPath), 503, 'Start the WhatsApp server before sending.');
+        $payload = json_encode(['phones' => array_values(array_unique($phones)), 'message' => $data['message'], 'mediaFilename' => $data['mediaFilename'] ?? null, 'expires' => now()->addSeconds(60)->getTimestamp(), 'nonce' => (string) \Illuminate\Support\Str::uuid()], JSON_THROW_ON_ERROR);
+        return response()->json(['payload' => $payload, 'signature' => hash_hmac('sha256', $payload, trim((string) file_get_contents($keyPath)))])->header('Cache-Control', 'no-store');
+    }
+
+    public function saleQuote(Request $request): JsonResponse
+    {
+        $data = $request->validate(['lines' => 'required|array|min:1|max:200', 'lines.*.roll_id' => 'required|integer', 'lines.*.quantity' => 'required', 'lines.*.unit_price' => 'nullable', 'lines.*.manual_discount' => 'nullable']);
+        return response()->json(FabricInventory::saleQuote($data['lines']));
     }
 
     public function barcodeImage(int $id): HttpResponse

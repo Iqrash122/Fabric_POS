@@ -129,7 +129,7 @@ test('fabric purchase to roll to credit sale to return to final collection recon
 
     await page.goto('/fabric/returns');
     const customerReturnCard = page.locator('.fabric-card').filter({ hasText: 'Customer return' }).first();
-    await customerReturnCard.getByLabel('Sale invoice ID').fill(saleId!);
+    await customerReturnCard.getByLabel('Sale invoice', { exact: true }).selectOption(saleId!);
     await customerReturnCard.getByRole('combobox', { name: 'Sale line' }).selectOption({ index: 1 });
     await customerReturnCard.getByLabel('Return quantity').fill('1.000');
     await customerReturnCard.getByRole('combobox', { name: 'Financial resolution' }).selectOption('reduce_balance');

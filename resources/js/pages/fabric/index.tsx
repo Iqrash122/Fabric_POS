@@ -1,3 +1,4 @@
+import { localInput, displayDate } from './dates';
 import type { FormDataConvertible } from '@inertiajs/core';
 import { Head, Link, router, usePage } from '@inertiajs/react';
 import {
@@ -88,9 +89,11 @@ type Props = {
     stock_counts?: Row[];
     customer_returns?: Row[];
     vendor_returns?: Row[];
+    return_rolls?: Row[];
     sale_lines?: Row[];
     account_balances?: Row[];
     account_entries?: Row[];
+    account_entry_rows?: Row[];
     transfers?: Row[];
     expenses?: Row[];
     promotions?: Row[];
@@ -98,6 +101,7 @@ type Props = {
     campaigns?: Row[];
     report_type?: string;
     report_rows?: Row[];
+    report_display_rows?: Row[];
     opening_balances?: Row[];
     staff?: Row[];
     audit?: Row[];
@@ -133,7 +137,7 @@ const sectionMeta: Record<string, { eyebrow: string; description: string }> = {
     expenses: { eyebrow: 'Operating costs', description: 'Record business expenses with account impact, notes and private receipt attachments.' },
     promotions: { eyebrow: 'Pricing campaigns', description: 'Schedule controlled discounts with priority, stacking rules and historical protection.' },
     marketing: { eyebrow: 'Consent-first outreach', description: 'Maintain opted-in contacts and prepare WhatsApp or SMS campaigns safely.' },
-    'whatsapp-bulk': { eyebrow: 'Bulk messaging', description: 'Select customers and send WhatsApp messages, images or videos to all of them in one click.' },
+    'whatsapp-bulk': { eyebrow: 'Bulk messaging', description: 'Send messages to customers with recorded WhatsApp consent. Manage consent and opt-outs in Marketing.' },
     reports: { eyebrow: 'Business intelligence', description: 'Inspect sales, purchases, stock, cash, expenses and profitability with export-ready views.' },
     settings: { eyebrow: 'Administration', description: 'Configure inventory rules, document layouts, opening balances, staff access and audit history.' },
 };
@@ -146,16 +150,6 @@ const money = (value: unknown, currency = 'PKR') =>
 const qty = (value: unknown, unit = 'meter') => {
     const amount = n(value) / 1000;
     return unit === 'piece' ? `${amount.toLocaleString()} pcs` : `${amount.toFixed(3)} m`;
-};
-const localInput = (timeZone: string, source?: string) => {
-    // Stored timestamps are UTC; datetime-local fields are interpreted in the shop timezone.
-    const timestamp = source && !/(?:Z|[+-]\d{2}:\d{2})$/i.test(source) ? `${source.replace(' ', 'T')}Z` : source;
-    const date = timestamp ? new Date(timestamp) : new Date();
-    const parts = Object.fromEntries(new Intl.DateTimeFormat('en-CA', {
-        timeZone, year: 'numeric', month: '2-digit', day: '2-digit',
-        hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
-    }).formatToParts(date).map((part) => [part.type, part.value]));
-    return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}`;
 };
 const options = (rows: Row[], label: (row: Row) => string) => rows.map((row) => ({ value: s(row.id), label: label(row) }));
 
@@ -380,7 +374,7 @@ function Layout({ p, children }: { p: Props; children: ReactNode }) {
                         <div className="fabric-heading-actions"><Link className="fabric-link-button" href="/fabric/pos"><Barcode size={17} /> Open POS</Link></div>
                     </div>
                     {success && <div className="fabric-notice" role="status"><PackageCheck size={18} /><div><strong>Saved successfully</strong><span>{success}</span></div></div>}
-                    {Object.keys(errors).length > 0 && <div className="fabric-error" role="alert"><div><strong>Please review the highlighted fields</strong><span>{Object.values(errors).join(' ')}</span></div></div>}
+                    {p.section !== 'returns' && Object.keys(errors).length > 0 && <div className="fabric-error" role="alert"><div><strong>Please review the highlighted fields</strong><span>{Object.values(errors).join(' ')}</span></div></div>}
                     {children}
                 </main>
                 <footer>Fabric stock, customer/vendor balances and money movements remain traceable to their source documents.</footer>
@@ -433,13 +427,13 @@ function Dashboard({ p }: { p: Props }) {
         <div className="fabric-metrics">{cards.map(([label, value, Icon, href]) => <Link className="fabric-metric" href={href} key={label}><span><Icon /></span><div><small>{label}</small><strong>{value}</strong></div><ChevronRight className="fabric-metric-chevron" size={17} aria-hidden="true" /></Link>)}</div>
         {p.role !== 'cashier' && <div className="fabric-balance-strip" aria-label="Available credits"><span>Customer retained credit <strong>{money(d.customer_credits, currency)}</strong></span><span>Vendor retained credit <strong>{money(d.vendor_credits, currency)}</strong></span></div>}
         <div className="fabric-grid two"><SectionCard title="Recent fabric sales"><Table rows={p.recent_sales ?? []} columns={[{ label: 'Invoice', value: (r) => <Link href={`/fabric/document/invoice/${s(r.id)}`}>{s(r.reference)}</Link> }, { label: 'Total', value: (r) => money(r.total, currency) }, { label: 'Paid', value: (r) => money(r.paid, currency) }, { label: 'Balance', value: (r) => money(r.current_balance ?? r.balance, currency) }]} /></SectionCard>
-            {p.role !== 'cashier' && <SectionCard title="Installment reminders"><Table rows={p.due_installments ?? []} columns={[{ label: 'Vendor', value: (r) => s(r.vendor_name) }, { label: 'Due', value: (r) => new Date(s(r.due_at)).toLocaleDateString() }, { label: 'Amount', value: (r) => money(r.amount, currency) }, { label: 'Status', value: (r) => <Status value={r.display_status ?? r.status} /> }]} /></SectionCard>}</div>
+            {p.role !== 'cashier' && <SectionCard title="Installment reminders"><Table rows={p.due_installments ?? []} columns={[{ label: 'Vendor', value: (r) => s(r.vendor_name) }, { label: 'Due', value: (r) => displayDate(s(p.business.timezone) || 'UTC', s(r.due_at)) }, { label: 'Amount', value: (r) => money(r.amount, currency) }, { label: 'Status', value: (r) => <Status value={r.display_status ?? r.status} /> }]} /></SectionCard>}</div>
     </>;
 }
 
 type CartLine = { roll_id: string; quantity: string; unit_price: string; manual_discount: string };
 function QuickCustomerForm() {
-    const a = useAction({ name: '', phone: '', address: '' }, '/fabric/action/customer-save', () => router.reload({ only: ['customers'] }));
+    const a = useAction({ name: '', phone: '', address: '' }, '/fabric/action/customer-save', () => router.reload({ only: ['customers', 'customer_accounts'] }));
     return <form ref={a.formRef} className="fabric-form" onSubmit={a.submit}><Field label="Customer name"><input value={a.data.name} onChange={(e) => a.setData({ ...a.data, name: e.target.value })} /></Field><Field label="Phone"><input value={a.data.phone} onChange={(e) => a.setData({ ...a.data, phone: e.target.value })} /></Field><Field label="Address"><textarea value={a.data.address} onChange={(e) => a.setData({ ...a.data, address: e.target.value })} /></Field><ErrorSummary errors={a.errors} /><Button type="submit" disabled={a.processing}>{a.processing ? 'Saving…' : 'Create customer'}</Button></form>;
 }
 function Pos({ p }: { p: Props }) {
@@ -493,12 +487,30 @@ function Pos({ p }: { p: Props }) {
 
     const currency = s(p.business.currency) || 'PKR';
     const rollById = useMemo(() => new Map([...p.rolls, ...scannedRolls].map((roll) => [s(roll.id), roll])), [p.rolls, scannedRolls]);
-    const estimated = lines.reduce((sum, line) => {
-        const qv = Number(line.quantity || 0);
-        const price = Number(line.unit_price || 0);
-        const discount = Number(line.manual_discount || 0);
-        return sum + Math.max(0, Math.round((qv * price - discount) * 100));
-    }, 0);
+    const cartKey = JSON.stringify(lines);
+    const [quote, setQuote] = useState<{ key: string; total: number; discount: number; line_totals: number[] } | null>(null);
+    const [quoteError, setQuoteError] = useState('');
+    const [quoteRevision, setQuoteRevision] = useState(0);
+    const quoteReady = lines.length === 0 || quote?.key === cartKey;
+    const estimated = quoteReady ? (quote?.total ?? 0) : 0;
+    useEffect(() => {
+        setQuoteError('');
+        if (!lines.length) { setQuote(null); return; }
+        const controller = new AbortController();
+        const timer = setTimeout(async () => {
+            const params = new URLSearchParams();
+            lines.forEach((line, index) => Object.entries(line).forEach(([key, value]) => params.set(`lines[${index}][${key}]`, value)));
+            try {
+                const response = await fetch(`/fabric/sale-quote?${params}`, { headers: { Accept: 'application/json' }, signal: controller.signal });
+                const result = await response.json();
+                if (!response.ok) throw new Error(result.message || 'Unable to calculate price. Check quantity and discount.');
+                if (!controller.signal.aborted) setQuote({ key: cartKey, total: result.total, discount: result.discount, line_totals: result.line_totals });
+            } catch (error) {
+                if (!controller.signal.aborted) setQuoteError(error instanceof Error ? error.message : 'Unable to calculate price.');
+            }
+        }, 150);
+        return () => { clearTimeout(timer); controller.abort(); };
+    }, [cartKey, lines, quoteRevision]);
 
     const filteredRolls = useMemo(() => {
         const term = rollSearch.toLowerCase().trim();
@@ -540,6 +552,10 @@ function Pos({ p }: { p: Props }) {
             const result = await response.json() as { type: string; record: Row; rolls?: Row[]; has_rolls?: boolean; message?: string };
             if (!response.ok) throw new Error(result.message || 'No matching roll or product found.');
             if (result.type === 'roll') addRoll(result.record);
+            else if (result.rolls && result.rolls.length > 1) {
+                setRollSearch(s(result.record.name));
+                setScanError('Multiple rolls match this product. Choose the color and roll below, or scan its individual barcode.');
+            }
             else if (result.rolls?.length) addRoll(result.rolls[0]);
             else {
                 if (result.has_rolls === false) {
@@ -601,6 +617,7 @@ function Pos({ p }: { p: Props }) {
             return;
         }
 
+        if (!quoteReady) return;
         const estTotal = estimated / 100;
 
         let actualP1 = '';
@@ -622,6 +639,7 @@ function Pos({ p }: { p: Props }) {
         const payload = {
             customer_id: customer || null,
             credit_authorized: credit,
+            quoted_total: estimated,
             manual_discount_reason: reason,
             lines,
             payments: [
@@ -657,7 +675,7 @@ function Pos({ p }: { p: Props }) {
                 }
                 barcodeInput.current?.focus();
             },
-            onError: setErrors,
+            onError: (next) => { setErrors(next); if (next.quoted_total) { setQuote(null); setQuoteRevision(value => value + 1); } },
             onFinish: () => {
                 submittingSale.current = false;
                 setProcessing(false);
@@ -740,7 +758,7 @@ function Pos({ p }: { p: Props }) {
                     {lines.map((line, index) => {
                         const roll = rollById.get(line.roll_id) ?? {};
                         const maxAvail = n(roll.available_qty_milli) / 1000;
-                        const lineSubtotal = Math.max(0, (Number(line.quantity || 0) * Number(line.unit_price || 0)) - Number(line.manual_discount || 0));
+                        const lineSubtotal = quoteReady ? (quote?.line_totals[index] ?? 0) / 100 : 0;
                         return (
                             <div className="pos-line" key={line.roll_id}>
                                 <div>
@@ -866,11 +884,13 @@ function Pos({ p }: { p: Props }) {
             </Field>
             <ErrorSummary errors={errors} />
             <div className="pos-total">
-                <span>Estimated before automatic promotions</span>
-                <strong>{money(estimated, currency)}</strong>
+                <span>Total after discounts</span>
+                <strong>{quoteReady ? money(estimated, currency) : 'Calculating…'}</strong>
             </div>
+            {quoteReady && quote && quote.discount > 0 && <p className="fabric-help">Discount applied: {money(quote.discount, currency)}</p>}
+            {quoteError && <p role="alert">{quoteError}</p>}
             <label className="fabric-check"><input type="checkbox" checked={autoPrint} onChange={(e) => setAutoPrint(e.target.checked)} /> Print receipt after sale</label>
-            <Button onClick={submit} disabled={processing || scanning || lines.length === 0}>
+            <Button onClick={submit} disabled={processing || scanning || !quoteReady || lines.length === 0}>
                 {processing ? 'Posting sale…' : `Post sale (${money(estimated, currency)})`}
             </Button>
         </SectionCard>
@@ -992,6 +1012,7 @@ function Customers({ p }: { p: Props }) {
     const currency = s(p.business.currency) || 'PKR';
     return <>
         <div className="fabric-toolbar">
+            <Expand title="New customer"><QuickCustomerForm /></Expand>
             <Expand title="Record later collection"><CustomerReceiptForm p={p} /></Expand>
             <Expand title="Apply customer advance"><CustomerAdvanceApplyForm p={p} /></Expand>
             <Expand title="Use / refund return credit"><CustomerCreditActionForm p={p} /></Expand>
@@ -1124,7 +1145,7 @@ function Vendors({ p }: { p: Props }) {
         <SectionCard title="Recent vendor payments"><Table rows={p.vendor_payments ?? []} columns={[
             { label: 'Payment', value: (r) => <strong>{s(r.reference)}</strong> },
             { label: 'Vendor', value: (r) => s(r.vendor_name) },
-            { label: 'Date', value: (r) => new Date(`${s(r.effective_at).replace(' ', 'T')}Z`).toLocaleString(undefined, { timeZone: s(p.business.timezone) || 'UTC' }) },
+            { label: 'Date', value: (r) => displayDate(s(p.business.timezone) || 'UTC', s(r.effective_at)) },
             { label: 'Paid from', value: (r) => s(r.account_name) },
             { label: 'Amount', value: (r) => money(r.amount, currency) },
             { label: 'Applied to payable', value: (r) => money(r.allocated, currency) },
@@ -1133,7 +1154,7 @@ function Vendors({ p }: { p: Props }) {
         ]} /></SectionCard>
         <SectionCard title="Installment reminders"><Table rows={p.installments ?? []} columns={[
             { label: 'Vendor ID', value: (r) => s(r.vendor_id) },
-            { label: 'Due', value: (r) => new Date(s(r.due_at)).toLocaleString() },
+            { label: 'Due', value: (r) => displayDate(s(p.business.timezone) || 'UTC', s(r.due_at)) },
             { label: 'Amount', value: (r) => money(r.amount, currency) },
             { label: 'Status', value: (r) => <Status value={r.display_status ?? r.status} /> },
             { label: 'Payment', value: (r) => s(r.payment_id) || '—' },
@@ -1146,7 +1167,7 @@ function PurchaseForm({ p }: { p: Props }) {
     const [vendor, setVendor] = useState(''); const [supplier, setSupplier] = useState(''); const [date, setDate] = useState(localInput(s(p.business.timezone) || 'UTC')); const [notes, setNotes] = useState(''); const [lines, setLines] = useState<PurchaseLine[]>([{ product_id: '', color_id: '', quantity: '', purchase_rate: '', discount: '0.00', additional_cost: '0.00' }]); const [busy, setBusy] = useState(false); const [errors, setErrors] = useState<Errors>({});
     useUnsavedChanges(vendor !== '' || supplier !== '' || notes !== '' || lines.some((l) => l.product_id || l.quantity));
     const submit = (event: FormEvent) => { event.preventDefault(); if (busy) return; setBusy(true); setErrors({}); allowNextUnsavedNavigation(); router.post('/fabric/action/purchase-create', { vendor_id: vendor, supplier_reference: supplier, bill_date: date, notes, lines }, { preserveScroll: true, onError: setErrors, onSuccess: () => { setVendor(''); setSupplier(''); setNotes(''); setLines([{ product_id: '', color_id: '', quantity: '', purchase_rate: '', discount: '0.00', additional_cost: '0.00' }]); }, onFinish: () => setBusy(false) }); };
-    return <form className="fabric-form" onSubmit={submit}><div className="fabric-form-grid two"><Field label="Vendor"><Select value={vendor} onChange={setVendor} rows={options(p.vendors.filter((v) => bool(v.active)), (r) => s(r.shop_name))} /></Field><Field label="Supplier bill reference"><input value={supplier} onChange={(e) => setSupplier(e.target.value)} /></Field><Field label="Bill date"><input type="datetime-local" value={date} onChange={(e) => setDate(e.target.value)} /></Field></div>{lines.map((line, index) => <div className="purchase-line" key={index}><Select value={line.product_id} onChange={(v) => setLines((rows) => rows.map((r, i) => i === index ? { ...r, product_id: v } : r))} rows={options(p.products.filter((x) => bool(x.active)), (r) => `${s(r.name)} · ${s(r.unit)}`)} /><Select value={line.color_id} onChange={(v) => setLines((rows) => rows.map((r, i) => i === index ? { ...r, color_id: v } : r))} rows={options(p.colors.filter((x) => bool(x.active)), (r) => s(r.name))} /><input placeholder="Qty" value={line.quantity} onChange={(e) => setLines((rows) => rows.map((r, i) => i === index ? { ...r, quantity: e.target.value } : r))} /><input placeholder="Purchase rate" value={line.purchase_rate} onChange={(e) => setLines((rows) => rows.map((r, i) => i === index ? { ...r, purchase_rate: e.target.value } : r))} /><input placeholder="Discount" value={line.discount} onChange={(e) => setLines((rows) => rows.map((r, i) => i === index ? { ...r, discount: e.target.value } : r))} /><input placeholder="Extra cost" value={line.additional_cost} onChange={(e) => setLines((rows) => rows.map((r, i) => i === index ? { ...r, additional_cost: e.target.value } : r))} /><button type="button" onClick={() => setLines((rows) => rows.filter((_, i) => i !== index))}><X size={16} /></button></div>)}<Button secondary onClick={() => setLines((rows) => [...rows, { product_id: '', color_id: '', quantity: '', purchase_rate: '', discount: '0.00', additional_cost: '0.00' }])}>Add line</Button><Field label="Internal purchase note"><textarea value={notes} onChange={(e) => setNotes(e.target.value)} /></Field><ErrorSummary errors={errors} /><Button type="submit" disabled={busy}>{busy ? 'Saving…' : 'Create purchase bill'}</Button></form>;
+    return <form className="fabric-form" onSubmit={submit}><div className="fabric-form-grid two"><Field label="Vendor"><Select value={vendor} onChange={setVendor} rows={options(p.vendors.filter((v) => bool(v.active)), (r) => s(r.shop_name))} /></Field><Field label="Supplier bill reference"><input value={supplier} onChange={(e) => setSupplier(e.target.value)} /></Field><Field label="Bill date"><input type="datetime-local" value={date} onChange={(e) => setDate(e.target.value)} /></Field></div>{lines.map((line, index) => <div className="purchase-line" key={index}><Field label="Product"><Select value={line.product_id} onChange={(v) => setLines((rows) => rows.map((r, i) => i === index ? { ...r, product_id: v } : r))} rows={options(p.products.filter((x) => bool(x.active)), (r) => `${s(r.name)} · ${s(r.unit)}`)} /></Field><Field label="Color"><Select value={line.color_id} onChange={(v) => setLines((rows) => rows.map((r, i) => i === index ? { ...r, color_id: v } : r))} rows={options(p.colors.filter((x) => bool(x.active)), (r) => s(r.name))} /></Field><Field label="Quantity (m / pcs)"><input placeholder="Qty" value={line.quantity} onChange={(e) => setLines((rows) => rows.map((r, i) => i === index ? { ...r, quantity: e.target.value } : r))} /></Field><Field label="Purchase rate (PKR / unit)"><input placeholder="Purchase rate" value={line.purchase_rate} onChange={(e) => setLines((rows) => rows.map((r, i) => i === index ? { ...r, purchase_rate: e.target.value } : r))} /></Field><Field label="Discount (PKR)"><input placeholder="Discount" value={line.discount} onChange={(e) => setLines((rows) => rows.map((r, i) => i === index ? { ...r, discount: e.target.value } : r))} /></Field><Field label="Extra cost (PKR)"><input placeholder="Extra cost" value={line.additional_cost} onChange={(e) => setLines((rows) => rows.map((r, i) => i === index ? { ...r, additional_cost: e.target.value } : r))} /></Field><button type="button" onClick={() => setLines((rows) => rows.filter((_, i) => i !== index))}><X size={16} /></button></div>)}<Button secondary onClick={() => setLines((rows) => [...rows, { product_id: '', color_id: '', quantity: '', purchase_rate: '', discount: '0.00', additional_cost: '0.00' }])}>Add line</Button><Field label="Internal purchase note"><textarea value={notes} onChange={(e) => setNotes(e.target.value)} /></Field><ErrorSummary errors={errors} /><Button type="submit" disabled={busy}>{busy ? 'Saving…' : 'Create purchase bill'}</Button></form>;
 }
 
 function PurchaseDraftForm({ p, row }: { p: Props; row: Row }) {
@@ -1159,7 +1180,7 @@ function PurchaseDraftForm({ p, row }: { p: Props; row: Row }) {
     const dirty = JSON.stringify({ vendor, supplier, date, notes, lines }) !== baseline.current;
     useUnsavedChanges(dirty);
     const submit = (event: FormEvent) => { event.preventDefault(); if (busy) return; setBusy(true); setErrors({}); allowNextUnsavedNavigation(); router.post(`/fabric/action/purchase-update/${s(row.id)}`, { vendor_id: vendor, supplier_reference: supplier, bill_date: date, notes, lines }, { preserveScroll: true, onError: setErrors, onSuccess: () => router.reload(), onFinish: () => setBusy(false) }); };
-    return <form className="fabric-form" onSubmit={submit}><div className="fabric-form-grid two"><Field label="Vendor"><Select value={vendor} onChange={setVendor} rows={options(p.vendors.filter((v) => bool(v.active) || s(v.id) === vendor), (r) => s(r.shop_name))} /></Field><Field label="Supplier bill reference"><input value={supplier} onChange={(e) => setSupplier(e.target.value)} /></Field><Field label="Bill date"><input type="datetime-local" value={date} onChange={(e) => setDate(e.target.value)} /></Field></div>{lines.map((line, index) => <div className="purchase-line" key={index}><Select value={line.product_id} onChange={(v) => setLines((rows) => rows.map((r, i) => i === index ? { ...r, product_id: v } : r))} rows={options(p.products.filter((x) => bool(x.active) || s(x.id) === line.product_id), (r) => `${s(r.name)} · ${s(r.unit)}`)} /><Select value={line.color_id} onChange={(v) => setLines((rows) => rows.map((r, i) => i === index ? { ...r, color_id: v } : r))} rows={options(p.colors.filter((x) => bool(x.active) || s(x.id) === line.color_id), (r) => s(r.name))} /><input placeholder="Qty" value={line.quantity} onChange={(e) => setLines((rows) => rows.map((r, i) => i === index ? { ...r, quantity: e.target.value } : r))} /><input placeholder="Purchase rate" value={line.purchase_rate} onChange={(e) => setLines((rows) => rows.map((r, i) => i === index ? { ...r, purchase_rate: e.target.value } : r))} /><input placeholder="Discount" value={line.discount} onChange={(e) => setLines((rows) => rows.map((r, i) => i === index ? { ...r, discount: e.target.value } : r))} /><input placeholder="Extra cost" value={line.additional_cost} onChange={(e) => setLines((rows) => rows.map((r, i) => i === index ? { ...r, additional_cost: e.target.value } : r))} /><button type="button" onClick={() => setLines((rows) => rows.filter((_, i) => i !== index))}><X size={16} /></button></div>)}<Button secondary onClick={() => setLines((rows) => [...rows, { product_id: '', color_id: '', quantity: '', purchase_rate: '', discount: '0.00', additional_cost: '0.00' }])}>Add line</Button><Field label="Internal purchase note"><textarea value={notes} onChange={(e) => setNotes(e.target.value)} /></Field><p className="fabric-help">Draft totals and lines can be changed only before any roll is received. Posted or received history must be corrected through returns/adjustments.</p><ErrorSummary errors={errors} /><Button type="submit" disabled={busy || !dirty}>{busy ? 'Saving…' : 'Save draft changes'}</Button></form>;
+    return <form className="fabric-form" onSubmit={submit}><div className="fabric-form-grid two"><Field label="Vendor"><Select value={vendor} onChange={setVendor} rows={options(p.vendors.filter((v) => bool(v.active) || s(v.id) === vendor), (r) => s(r.shop_name))} /></Field><Field label="Supplier bill reference"><input value={supplier} onChange={(e) => setSupplier(e.target.value)} /></Field><Field label="Bill date"><input type="datetime-local" value={date} onChange={(e) => setDate(e.target.value)} /></Field></div>{lines.map((line, index) => <div className="purchase-line" key={index}><Field label="Product"><Select value={line.product_id} onChange={(v) => setLines((rows) => rows.map((r, i) => i === index ? { ...r, product_id: v } : r))} rows={options(p.products.filter((x) => bool(x.active) || s(x.id) === line.product_id), (r) => `${s(r.name)} · ${s(r.unit)}`)} /></Field><Field label="Color"><Select value={line.color_id} onChange={(v) => setLines((rows) => rows.map((r, i) => i === index ? { ...r, color_id: v } : r))} rows={options(p.colors.filter((x) => bool(x.active) || s(x.id) === line.color_id), (r) => s(r.name))} /></Field><Field label="Quantity (m / pcs)"><input placeholder="Qty" value={line.quantity} onChange={(e) => setLines((rows) => rows.map((r, i) => i === index ? { ...r, quantity: e.target.value } : r))} /></Field><Field label="Purchase rate (PKR / unit)"><input placeholder="Purchase rate" value={line.purchase_rate} onChange={(e) => setLines((rows) => rows.map((r, i) => i === index ? { ...r, purchase_rate: e.target.value } : r))} /></Field><Field label="Discount (PKR)"><input placeholder="Discount" value={line.discount} onChange={(e) => setLines((rows) => rows.map((r, i) => i === index ? { ...r, discount: e.target.value } : r))} /></Field><Field label="Extra cost (PKR)"><input placeholder="Extra cost" value={line.additional_cost} onChange={(e) => setLines((rows) => rows.map((r, i) => i === index ? { ...r, additional_cost: e.target.value } : r))} /></Field><button type="button" onClick={() => setLines((rows) => rows.filter((_, i) => i !== index))}><X size={16} /></button></div>)}<Button secondary onClick={() => setLines((rows) => [...rows, { product_id: '', color_id: '', quantity: '', purchase_rate: '', discount: '0.00', additional_cost: '0.00' }])}>Add line</Button><Field label="Internal purchase note"><textarea value={notes} onChange={(e) => setNotes(e.target.value)} /></Field><p className="fabric-help">Draft totals and lines can be changed only before any roll is received. Posted or received history must be corrected through returns/adjustments.</p><ErrorSummary errors={errors} /><Button type="submit" disabled={busy || !dirty}>{busy ? 'Saving…' : 'Save draft changes'}</Button></form>;
 }
 function PurchaseEditor({ p }: { p: Props }) {
     const [selected, setSelected] = useState('');
@@ -1232,7 +1253,7 @@ function StockCountForm({ p }: { p: Props }) {
 
 function Inventory({ p }: { p: Props }) {
     const currency = s(p.business.currency) || 'PKR';
-    return <><div className="fabric-toolbar">{p.role !== 'cashier' && <><Expand title="New product"><ProductForm p={p} /></Expand><Expand title="Edit product"><ProductEditor p={p} /></Expand><Expand title="Opening stock"><OpeningStockForm p={p} /></Expand><Expand title="Stock adjustment"><StockAdjustForm p={p} /></Expand><Expand title="Physical count"><StockCountForm p={p} /></Expand></>} {bool(p.fabric_settings.reservations_enabled) && <Expand title="Reserve stock"><ReservationForm p={p} /></Expand>}</div>{p.role !== 'cashier' && <SectionCard title="Fabric / product catalogue"><Table rows={p.products} columns={[{ label: 'Product', value: (r) => <strong>{s(r.name)}</strong> }, { label: 'Category', value: (r) => s(r.category_name) }, { label: 'SKU', value: (r) => s(r.sku) }, { label: 'Product barcode', value: (r) => s(r.barcode) || 'Use individual stock label' }, { label: 'Unit', value: (r) => s(r.unit) }, { label: 'Default sell', value: (r) => money(r.default_selling_price, currency) }, { label: 'Low stock', value: (r) => qty(r.low_stock_milli, s(r.unit)) }, { label: 'State', value: (r) => <Status value={bool(r.active) ? 'active' : 'archived'} /> }, { label: 'Action', value: (r) => <InlineAction label={bool(r.active) ? 'Archive' : 'Reactivate'} url={`/fabric/action/product-toggle/${s(r.id)}`} /> }]} /></SectionCard>}<SectionCard title="Individual roll inventory"><Table rows={p.rolls} columns={[{ label: 'Roll', value: (r) => <div><strong>{s(r.roll_number)}</strong><small className="block">{s(r.barcode)}</small></div> }, { label: 'Fabric', value: (r) => `${s(r.product_name)} / ${s(r.color_name)}` }, { label: 'Condition', value: (r) => <Status value={r.condition} /> }, { label: 'Received', value: (r) => qty(r.original_qty_milli, s(r.unit)) }, { label: 'Current', value: (r) => qty(r.current_qty_milli, s(r.unit)) }, { label: 'Reserved', value: (r) => qty(r.reserved_qty_milli, s(r.unit)) }, { label: 'Available', value: (r) => <strong>{qty(r.available_qty_milli, s(r.unit))}</strong> }, ...(p.role === 'cashier' ? [] : [{ label: 'Cost', value: (r: Row) => money(r.unit_cost, currency) }]), { label: 'Sell', value: (r) => money(r.selling_price, currency) }, { label: 'Barcode label', value: (r) => <div className="inventory-barcode"><img loading="lazy" src={`/fabric/barcode-image/${s(r.id)}`} alt={`Barcode ${s(r.barcode)}`} /><code>{s(r.barcode)}</code><div className="fabric-actions"><a href={`/fabric/document/barcode-label/${s(r.id)}`} target="_blank" rel="noopener noreferrer">Print label</a><a href={`/fabric/document/barcode/${s(r.id)}`}>PDF</a></div></div> }]} /></SectionCard>{bool(p.fabric_settings.reservations_enabled) && <SectionCard title="Active reservations"><Table rows={p.reservations ?? []} columns={[{ label: 'Roll ID', value: (r) => s(r.roll_id) }, { label: 'Quantity', value: (r) => (n(r.quantity_milli) / 1000).toFixed(3) }, { label: 'Customer', value: (r) => s(r.customer_id) || '—' }, { label: 'Expires', value: (r) => r.expires_at ? new Date(s(r.expires_at)).toLocaleString() : '—' }, { label: 'Action', value: (r) => <InlineAction label="Release" url={`/fabric/action/reservation-release/${s(r.id)}`} /> }]} /></SectionCard>}<SectionCard title="Physical counts"><Table rows={p.stock_counts ?? []} columns={[{ label: 'Count', value: (r) => s(r.reference) }, { label: 'Date', value: (r) => new Date(s(r.counted_at)).toLocaleString() }, { label: 'State', value: (r) => <Status value={r.state} /> }, { label: 'Action', value: (r) => s(r.state) === 'draft' && p.role !== 'cashier' ? <InlineAction label="Post adjustments" url={`/fabric/action/stock-count-post/${s(r.id)}`} /> : '—' }]} /></SectionCard><SectionCard title="Recent stock movements"><Table rows={p.movements ?? []} columns={[{ label: 'Roll', value: (r) => s(r.roll_number) }, { label: 'Movement', value: (r) => s(r.kind) }, { label: 'Quantity Δ', value: (r) => (n(r.qty_delta_milli) / 1000).toFixed(3) }, { label: 'Reference', value: (r) => `${s(r.reference_type)} #${s(r.reference_id)}` }, { label: 'Date', value: (r) => new Date(s(r.effective_at)).toLocaleString() }]} /></SectionCard></>;
+    return <><div className="fabric-toolbar">{p.role !== 'cashier' && <><Expand title="New product"><ProductForm p={p} /></Expand><Expand title="Edit product"><ProductEditor p={p} /></Expand><Expand title="Opening stock"><OpeningStockForm p={p} /></Expand><Expand title="Stock adjustment"><StockAdjustForm p={p} /></Expand><Expand title="Physical count"><StockCountForm p={p} /></Expand></>} {bool(p.fabric_settings.reservations_enabled) && <Expand title="Reserve stock"><ReservationForm p={p} /></Expand>}</div>{p.role !== 'cashier' && <SectionCard title="Fabric / product catalogue"><Table rows={p.products} columns={[{ label: 'Product', value: (r) => <strong>{s(r.name)}</strong> }, { label: 'Category', value: (r) => s(r.category_name) }, { label: 'SKU', value: (r) => s(r.sku) }, { label: 'Product barcode', value: (r) => s(r.barcode) || 'Use individual stock label' }, { label: 'Unit', value: (r) => s(r.unit) }, { label: 'Default sell', value: (r) => money(r.default_selling_price, currency) }, { label: 'Low stock', value: (r) => qty(r.low_stock_milli, s(r.unit)) }, { label: 'State', value: (r) => <Status value={bool(r.active) ? 'active' : 'archived'} /> }, { label: 'Action', value: (r) => <InlineAction label={bool(r.active) ? 'Archive' : 'Reactivate'} url={`/fabric/action/product-toggle/${s(r.id)}`} /> }]} /></SectionCard>}<SectionCard title="Individual roll inventory"><Table rows={p.rolls} columns={[{ label: 'Roll', value: (r) => <div><strong>{s(r.roll_number)}</strong><small className="block">{s(r.barcode)}</small></div> }, { label: 'Fabric', value: (r) => `${s(r.product_name)} / ${s(r.color_name)}` }, { label: 'Condition', value: (r) => <Status value={r.condition} /> }, { label: 'Received', value: (r) => qty(r.original_qty_milli, s(r.unit)) }, { label: 'Current', value: (r) => qty(r.current_qty_milli, s(r.unit)) }, { label: 'Reserved', value: (r) => qty(r.reserved_qty_milli, s(r.unit)) }, { label: 'Available', value: (r) => <strong>{qty(r.available_qty_milli, s(r.unit))}</strong> }, ...(p.role === 'cashier' ? [] : [{ label: 'Cost', value: (r: Row) => money(r.unit_cost, currency) }]), { label: 'Sell', value: (r) => money(r.selling_price, currency) }, { label: 'Barcode label', value: (r) => <div className="inventory-barcode"><img loading="lazy" src={`/fabric/barcode-image/${s(r.id)}`} alt={`Barcode ${s(r.barcode)}`} /><code>{s(r.barcode)}</code><div className="fabric-actions"><a href={`/fabric/document/barcode-label/${s(r.id)}`} target="_blank" rel="noopener noreferrer">Print label</a><a href={`/fabric/document/barcode/${s(r.id)}`}>PDF</a></div></div> }]} /></SectionCard>{bool(p.fabric_settings.reservations_enabled) && <SectionCard title="Active reservations"><Table rows={p.reservations ?? []} columns={[{ label: 'Roll ID', value: (r) => s(r.roll_id) }, { label: 'Quantity', value: (r) => (n(r.quantity_milli) / 1000).toFixed(3) }, { label: 'Customer', value: (r) => s(r.customer_id) || '—' }, { label: 'Expires', value: (r) => r.expires_at ? displayDate(s(p.business.timezone) || 'UTC', s(r.expires_at)) : '—' }, { label: 'Action', value: (r) => <InlineAction label="Release" url={`/fabric/action/reservation-release/${s(r.id)}`} /> }]} /></SectionCard>}<SectionCard title="Physical counts"><Table rows={p.stock_counts ?? []} columns={[{ label: 'Count', value: (r) => s(r.reference) }, { label: 'Date', value: (r) => displayDate(s(p.business.timezone) || 'UTC', s(r.counted_at)) }, { label: 'State', value: (r) => <Status value={r.state} /> }, { label: 'Action', value: (r) => s(r.state) === 'draft' && p.role !== 'cashier' ? <InlineAction label="Post adjustments" url={`/fabric/action/stock-count-post/${s(r.id)}`} /> : '—' }]} /></SectionCard><SectionCard title="Recent stock movements"><Table rows={p.movements ?? []} columns={[{ label: 'Roll', value: (r) => s(r.roll_number) }, { label: 'Movement', value: (r) => s(r.kind) }, { label: 'Quantity Δ', value: (r) => (n(r.qty_delta_milli) / 1000).toFixed(3) }, { label: 'Reference', value: (r) => `${s(r.reference_type)} #${s(r.reference_id)}` }, { label: 'Date', value: (r) => displayDate(s(p.business.timezone) || 'UTC', s(r.effective_at)) }]} /></SectionCard></>;
 }
 
 function Returns({ p }: { p: Props }) {
@@ -1251,18 +1272,18 @@ function Returns({ p }: { p: Props }) {
             lines: [{ sale_line_id: a.data.sale_line_id, quantity: a.data.quantity, condition: a.data.condition }],
         });
     };
-    return <><div className="fabric-grid two"><SectionCard title="Customer return"><form ref={a.formRef} className="fabric-form" onSubmit={submit}><ErrorSummary errors={a.errors} /><Field label="Sale invoice ID"><input value={a.data.sale_id} onChange={(e) => a.setData({ ...a.data, sale_id: e.target.value })} /></Field><Field label="Sale line"><Select value={a.data.sale_line_id} onChange={(v) => a.setData({ ...a.data, sale_line_id: v })} rows={options((p.sale_lines ?? []).filter((r) => !a.data.sale_id || s(r.sale_id) === a.data.sale_id), (r) => `${s(r.sale_reference)} · ${s(r.product_name)} · ${(n(r.quantity_milli) / 1000).toFixed(3)}`)} /></Field><div className="fabric-form-grid two"><Field label="Return quantity"><input value={a.data.quantity} onChange={(e) => a.setData({ ...a.data, quantity: e.target.value })} /></Field><Field label="Condition"><Select value={a.data.condition} onChange={(v) => a.setData({ ...a.data, condition: v })} rows={[{ value: 'resalable', label: 'Resalable remnant' }, { value: 'damaged', label: 'Damaged / inspection' }]} /></Field><Field label="Financial resolution"><Select value={a.data.resolution} onChange={(v) => a.setData({ ...a.data, resolution: v })} rows={[{ value: 'reduce_balance', label: 'Reduce original balance' }, { value: 'credit', label: 'Keep customer credit' }, { value: 'refund', label: 'Cash / bank refund' }]} /></Field>{a.data.resolution === 'refund' && <Field label="Refund account"><Select value={a.data.account_id} onChange={(v) => a.setData({ ...a.data, account_id: v })} rows={options(p.accounts, (r) => s(r.name))} /></Field>}<Field label="Effective date"><input type="datetime-local" value={a.data.effective_at} onChange={(e) => a.setData({ ...a.data, effective_at: e.target.value })} /></Field></div><Field label="Reason"><textarea value={a.data.reason} onChange={(e) => a.setData({ ...a.data, reason: e.target.value })} /></Field><Button type="submit" disabled={a.processing}>{a.processing ? 'Posting…' : 'Post customer return'}</Button></form></SectionCard><SectionCard title="Vendor return"><p className="fabric-help">Vendor returns are posted against the original bill and physical roll. Use the roll and purchase IDs shown in Purchases/Inventory; the backend verifies they belong to the same vendor and bill.</p><VendorReturnQuick p={p} /></SectionCard></div><SectionCard title="Return history"><Table rows={p.customer_returns ?? []} columns={[{ label: 'Return', value: (r) => s(r.reference) }, { label: 'Sale ID', value: (r) => s(r.sale_id) }, { label: 'Credit', value: (r) => money(r.credit_amount, currency) }, { label: 'Resolution', value: (r) => <Status value={r.resolution} /> }, { label: 'Reason', value: (r) => s(r.reason) }]} /></SectionCard></>;
+    return <><div className="fabric-grid two"><SectionCard title="Customer return"><form ref={a.formRef} className="fabric-form" onSubmit={submit}><ErrorSummary errors={a.errors} /><Field label="Sale invoice"><Select value={a.data.sale_id} onChange={(v) => a.setData({ ...a.data, sale_id: v, sale_line_id: '' })} rows={Array.from(new Map((p.sale_lines ?? []).map((r) => [s(r.sale_id), { value: s(r.sale_id), label: s(r.sale_reference) }])).values())} /></Field><Field label="Sale line"><Select value={a.data.sale_line_id} onChange={(v) => a.setData({ ...a.data, sale_line_id: v, sale_id: s(p.sale_lines?.find((r) => s(r.id) === v)?.sale_id) })} rows={options((p.sale_lines ?? []).filter((r) => n(r.quantity_milli) > n(r.returned_qty_milli) && (!a.data.sale_id || s(r.sale_id) === a.data.sale_id)), (r) => `${s(r.sale_reference)} · ${s(r.product_name)} · ${(Math.max(0, n(r.quantity_milli) - n(r.returned_qty_milli)) / 1000).toFixed(3)} returnable`)} /></Field><div className="fabric-form-grid two"><Field label="Return quantity"><input value={a.data.quantity} onChange={(e) => a.setData({ ...a.data, quantity: e.target.value })} /></Field><Field label="Condition"><Select value={a.data.condition} onChange={(v) => a.setData({ ...a.data, condition: v })} rows={[{ value: 'resalable', label: 'Resalable remnant' }, { value: 'damaged', label: 'Damaged / inspection' }]} /></Field><Field label="Financial resolution"><Select value={a.data.resolution} onChange={(v) => a.setData({ ...a.data, resolution: v })} rows={[{ value: 'reduce_balance', label: 'Reduce original balance' }, { value: 'credit', label: 'Keep customer credit' }, { value: 'refund', label: 'Cash / bank refund' }]} /></Field>{a.data.resolution === 'refund' && <Field label="Refund account"><Select value={a.data.account_id} onChange={(v) => a.setData({ ...a.data, account_id: v })} rows={options(p.accounts, (r) => s(r.name))} /></Field>}<Field label="Effective date"><input type="datetime-local" value={a.data.effective_at} onChange={(e) => a.setData({ ...a.data, effective_at: e.target.value })} /></Field></div><Field label="Reason"><textarea value={a.data.reason} onChange={(e) => a.setData({ ...a.data, reason: e.target.value })} /></Field><Button type="submit" disabled={a.processing}>{a.processing ? 'Posting…' : 'Post customer return'}</Button></form></SectionCard><SectionCard title="Vendor return"><p className="fabric-help">Select the vendor, original purchase bill and roll. Available quantities are shown for each roll.</p><VendorReturnQuick p={p} /></SectionCard></div><SectionCard title="Return history"><Table rows={p.customer_returns ?? []} columns={[{ label: 'Return', value: (r) => s(r.reference) }, { label: 'Sale ID', value: (r) => s(r.sale_id) }, { label: 'Credit', value: (r) => money(r.credit_amount, currency) }, { label: 'Resolution', value: (r) => <Status value={r.resolution} /> }, { label: 'Reason', value: (r) => s(r.reason) }]} /></SectionCard></>;
 }
 
 function VendorReturnQuick({ p }: { p: Props }) {
     const a = useAction({ vendor_id: '', purchase_bill_id: '', roll_id: '', quantity: '', reason: '', effective_at: localInput(s(p.business.timezone) || 'UTC'), idempotency_key: crypto.randomUUID() }, '/fabric/action/vendor-return', () => router.reload());
     const submit = (event: FormEvent) => { event.preventDefault(); a.post({ ...a.data, lines: [{ roll_id: a.data.roll_id, quantity: a.data.quantity }] }); };
-    return <form ref={a.formRef} className="fabric-form" onSubmit={submit}><ErrorSummary errors={a.errors} /><div className="fabric-form-grid two"><Field label="Vendor"><Select value={a.data.vendor_id} onChange={(v) => a.setData({ ...a.data, vendor_id: v })} rows={options(p.vendors, (r) => s(r.shop_name))} /></Field><Field label="Purchase bill ID"><input value={a.data.purchase_bill_id} onChange={(e) => a.setData({ ...a.data, purchase_bill_id: e.target.value })} /></Field><Field label="Roll"><Select value={a.data.roll_id} onChange={(v) => a.setData({ ...a.data, roll_id: v })} rows={options(p.rolls.filter((r) => !a.data.vendor_id || s(r.vendor_id) === a.data.vendor_id), (r) => `${s(r.roll_number)} · ${s(r.product_name)}`)} /></Field><Field label="Quantity"><input value={a.data.quantity} onChange={(e) => a.setData({ ...a.data, quantity: e.target.value })} /></Field></div><Field label="Reason"><textarea value={a.data.reason} onChange={(e) => a.setData({ ...a.data, reason: e.target.value })} /></Field><Button type="submit" disabled={a.processing}>{a.processing ? 'Posting…' : 'Return to vendor'}</Button></form>;
+    return <form ref={a.formRef} className="fabric-form" onSubmit={submit}><ErrorSummary errors={a.errors} /><div className="fabric-form-grid two"><Field label="Vendor"><Select value={a.data.vendor_id} onChange={(v) => a.setData({ ...a.data, vendor_id: v, purchase_bill_id: '', roll_id: '' })} rows={options(p.vendors, (r) => s(r.shop_name))} /></Field><Field label="Purchase bill"><Select value={a.data.purchase_bill_id} onChange={(v) => a.setData({ ...a.data, purchase_bill_id: v, vendor_id: s(p.purchase_bills?.find((r) => s(r.id) === v)?.vendor_id), roll_id: '' })} rows={options((p.purchase_bills ?? []).filter((r) => !a.data.vendor_id || s(r.vendor_id) === a.data.vendor_id), (r) => s(r.reference))} /></Field><Field label="Roll"><Select value={a.data.roll_id} onChange={(v) => a.setData({ ...a.data, roll_id: v, purchase_bill_id: s(p.return_rolls?.find((r) => s(r.id) === v)?.purchase_bill_id), vendor_id: s(p.return_rolls?.find((r) => s(r.id) === v)?.vendor_id) })} rows={options((p.return_rolls ?? []).filter((r) => (!a.data.vendor_id || s(r.vendor_id) === a.data.vendor_id) && (!a.data.purchase_bill_id || s(r.purchase_bill_id) === a.data.purchase_bill_id)), (r) => `${s(r.roll_number)} · ${s(r.product_name)} / ${s(r.color_name)} · ${qty(n(r.current_qty_milli) - n(r.reserved_qty_milli))} available`)} /></Field><Field label="Quantity"><input value={a.data.quantity} onChange={(e) => a.setData({ ...a.data, quantity: e.target.value })} /></Field></div><Field label="Reason"><textarea value={a.data.reason} onChange={(e) => a.setData({ ...a.data, reason: e.target.value })} /></Field><Button type="submit" disabled={a.processing}>{a.processing ? 'Posting…' : 'Return to vendor'}</Button></form>;
 }
 
 function CashBank({ p }: { p: Props }) {
     const currency = s(p.business.currency) || 'PKR'; const a = useAction({ from_account_id: '', to_account_id: '', amount: '', effective_at: localInput(s(p.business.timezone) || 'UTC'), note: '', idempotency_key: crypto.randomUUID() }, '/fabric/action/transfer', () => router.reload());
-    return <><div className="fabric-metrics">{(p.account_balances ?? []).map((account) => <div className="fabric-metric" key={s(account.id)}><span><WalletCards /></span><div><small>{s(account.name)} · {s(account.kind)}</small><strong>{money(account.balance, currency)}</strong></div></div>)}</div>{p.role !== 'cashier' && <SectionCard title="Transfer between accounts"><form ref={a.formRef} className="fabric-form inline" onSubmit={a.submit}><ErrorSummary errors={a.errors} /><Select value={a.data.from_account_id} onChange={(v) => a.setData({ ...a.data, from_account_id: v })} rows={options(p.accounts, (r) => s(r.name))} /><ArrowLeftRight /><Select value={a.data.to_account_id} onChange={(v) => a.setData({ ...a.data, to_account_id: v })} rows={options(p.accounts, (r) => s(r.name))} /><input placeholder="Amount" value={a.data.amount} onChange={(e) => a.setData({ ...a.data, amount: e.target.value })} /><Button type="submit" disabled={a.processing}>{a.processing ? 'Transferring…' : 'Transfer'}</Button></form></SectionCard>}<SectionCard title="Cash / bank ledger"><Table rows={p.account_entries ?? []} columns={[{ label: 'Date', value: (r) => new Date(s(r.effective_at)).toLocaleString() }, { label: 'Account', value: (r) => s(r.account_id) }, { label: 'Type', value: (r) => s(r.kind) }, { label: 'Direction', value: (r) => <Status value={r.direction} /> }, { label: 'Amount', value: (r) => money(r.amount, currency) }, { label: 'Source', value: (r) => `${s(r.reference_type)} #${s(r.reference_id)}` }]} /></SectionCard></>;
+    return <><div className="fabric-metrics">{(p.account_balances ?? []).map((account) => <div className="fabric-metric" key={s(account.id)}><span><WalletCards /></span><div><small>{s(account.name)} · {s(account.kind)}</small><strong>{money(account.balance, currency)}</strong></div></div>)}</div>{p.role !== 'cashier' && <SectionCard title="Transfer between accounts"><form ref={a.formRef} className="fabric-form inline" onSubmit={a.submit}><ErrorSummary errors={a.errors} /><Field label="From account"><Select value={a.data.from_account_id} onChange={(v) => a.setData({ ...a.data, from_account_id: v, to_account_id: a.data.to_account_id === v ? '' : a.data.to_account_id })} rows={options(p.accounts, (r) => s(r.name))} /></Field><ArrowLeftRight /><Field label="To account"><Select value={a.data.to_account_id} onChange={(v) => a.setData({ ...a.data, to_account_id: v })} rows={options(p.accounts.filter((r) => s(r.id) !== a.data.from_account_id), (r) => s(r.name))} /></Field><input placeholder="Amount" value={a.data.amount} onChange={(e) => a.setData({ ...a.data, amount: e.target.value })} /><Button type="submit" disabled={a.processing}>{a.processing ? 'Transferring…' : 'Transfer'}</Button></form></SectionCard>}<SectionCard title="Cash / bank ledger"><Table rows={p.account_entry_rows ?? []} columns={Object.keys(p.account_entry_rows?.[0] ?? {}).map((key) => ({ label: key, value: (r: Row) => s(r[key]) }))} /></SectionCard></>;
 }
 
 function Expenses({ p }: { p: Props }) {
@@ -1273,7 +1294,7 @@ function Expenses({ p }: { p: Props }) {
         event.preventDefault();
         a.post(a.data, true);
     };
-    return <><SectionCard title="Post operating expense"><form ref={a.formRef} className="fabric-form" onSubmit={submit}><ErrorSummary errors={a.errors} /><div className="fabric-form-grid two"><Field label="Category"><input value={a.data.category} onChange={(e) => a.setData({ ...a.data, category: e.target.value })} /></Field><Field label="Amount"><input value={a.data.amount} onChange={(e) => a.setData({ ...a.data, amount: e.target.value })} /></Field><Field label="Cash / bank"><Select value={a.data.account_id} onChange={(v) => a.setData({ ...a.data, account_id: v })} rows={options(p.accounts, (r) => s(r.name))} /></Field><Field label="Date"><input type="datetime-local" value={a.data.effective_at} onChange={(e) => a.setData({ ...a.data, effective_at: e.target.value })} /></Field><Field label="Private receipt"><input type="file" accept=".pdf,.jpg,.jpeg,.png" onChange={(e) => a.setData({ ...a.data, receipt: e.target.files?.[0] ?? null })} /></Field><Field label="Note"><input value={a.data.note} onChange={(e) => a.setData({ ...a.data, note: e.target.value })} /></Field></div><Button type="submit" disabled={a.processing}>{a.processing ? 'Posting…' : 'Post expense'}</Button></form></SectionCard><SectionCard title="Expense history"><Table rows={p.expenses ?? []} columns={[{ label: 'Reference', value: (r) => s(r.reference) }, { label: 'Category', value: (r) => s(r.category) }, { label: 'Amount', value: (r) => money(r.amount, currency) }, { label: 'Date', value: (r) => new Date(s(r.effective_at)).toLocaleString() }, { label: 'Receipt', value: (r) => r.receipt_path ? <a href={`/fabric/expense-receipt/${s(r.id)}`}>Open</a> : '—' }]} /></SectionCard></>;
+    return <><SectionCard title="Post operating expense"><form ref={a.formRef} className="fabric-form" onSubmit={submit}><ErrorSummary errors={a.errors} /><div className="fabric-form-grid two"><Field label="Category"><input value={a.data.category} onChange={(e) => a.setData({ ...a.data, category: e.target.value })} /></Field><Field label="Amount"><input value={a.data.amount} onChange={(e) => a.setData({ ...a.data, amount: e.target.value })} /></Field><Field label="Cash / bank"><Select value={a.data.account_id} onChange={(v) => a.setData({ ...a.data, account_id: v })} rows={options(p.accounts, (r) => s(r.name))} /></Field><Field label="Date"><input type="datetime-local" value={a.data.effective_at} onChange={(e) => a.setData({ ...a.data, effective_at: e.target.value })} /></Field><Field label="Private receipt"><input type="file" accept=".pdf,.jpg,.jpeg,.png" onChange={(e) => a.setData({ ...a.data, receipt: e.target.files?.[0] ?? null })} /></Field><Field label="Note"><input value={a.data.note} onChange={(e) => a.setData({ ...a.data, note: e.target.value })} /></Field></div><Button type="submit" disabled={a.processing}>{a.processing ? 'Posting…' : 'Post expense'}</Button></form></SectionCard><SectionCard title="Expense history"><Table rows={p.expenses ?? []} columns={[{ label: 'Reference', value: (r) => s(r.reference) }, { label: 'Category', value: (r) => s(r.category) }, { label: 'Amount', value: (r) => money(r.amount, currency) }, { label: 'Date', value: (r) => displayDate(s(p.business.timezone) || 'UTC', s(r.effective_at)) }, { label: 'Receipt', value: (r) => r.receipt_path ? <a href={`/fabric/expense-receipt/${s(r.id)}`}>Open</a> : '—' }]} /></SectionCard></>;
 }
 
 function PromotionForm({ p, row }: { p: Props; row?: Row }) {
@@ -1293,16 +1314,16 @@ function PromotionForm({ p, row }: { p: Props; row?: Row }) {
 function PromotionEditor({ p }: { p: Props }) {
     const [selected, setSelected] = useState('');
     const row = (p.promotions ?? []).find((r) => s(r.id) === selected);
-    return <div className="fabric-form"><Field label="Promotion to edit"><Select value={selected} onChange={setSelected} rows={options(p.promotions ?? [], (r) => `${s(r.name)} · ${s(r.percent)}%`)} /></Field>{row && <PromotionForm key={selected} p={p} row={row} />}</div>;
+    return <div className="fabric-form"><Field label="Promotion to edit"><Select value={selected} onChange={setSelected} rows={options(p.promotions ?? [], (r) => `${s(r.name)} · ${n(r.percent)}%`)} /></Field>{row && <PromotionForm key={selected} p={p} row={row} />}</div>;
 }
 function Promotions({ p }: { p: Props }) {
-    return <><div className="fabric-toolbar"><Expand title="New promotion"><PromotionForm p={p} /></Expand><Expand title="Edit promotion"><PromotionEditor p={p} /></Expand></div><SectionCard title="Promotion schedule"><Table rows={p.promotions ?? []} columns={[{ label: 'Name', value: (r) => <strong>{s(r.name)}</strong> }, { label: 'Percent', value: (r) => `${s(r.percent)}%` }, { label: 'Start', value: (r) => new Date(s(r.starts_at)).toLocaleString() }, { label: 'End', value: (r) => new Date(s(r.ends_at)).toLocaleString() }, { label: 'Priority', value: (r) => s(r.priority) }, { label: 'Targets', value: (r) => ((r.targets as Row[] | undefined)?.length ?? 0) ? `${(r.targets as Row[]).length} selected` : 'All fabric' }, { label: 'Stacking', value: (r) => bool(r.stackable) ? 'Allowed' : 'No' }, { label: 'State', value: (r) => <Status value={bool(r.active) ? 'active' : 'inactive'} /> }, { label: 'Action', value: (r) => <InlineAction label={bool(r.active) ? 'Deactivate' : 'Activate'} url={`/fabric/action/promotion-toggle/${s(r.id)}`} /> }]} /></SectionCard></>;
+    return <><div className="fabric-toolbar"><Expand title="New promotion"><PromotionForm p={p} /></Expand><Expand title="Edit promotion"><PromotionEditor p={p} /></Expand></div><SectionCard title="Promotion schedule"><Table rows={p.promotions ?? []} columns={[{ label: 'Name', value: (r) => <strong>{s(r.name)}</strong> }, { label: 'Percent', value: (r) => `${n(r.percent)}%` }, { label: 'Start', value: (r) => displayDate(s(p.business.timezone) || 'UTC', s(r.starts_at)) }, { label: 'End', value: (r) => displayDate(s(p.business.timezone) || 'UTC', s(r.ends_at)) }, { label: 'Priority', value: (r) => s(r.priority) }, { label: 'Targets', value: (r) => ((r.targets as Row[] | undefined)?.length ?? 0) ? `${(r.targets as Row[]).length} selected` : 'All fabric' }, { label: 'Stacking', value: (r) => bool(r.stackable) ? 'Allowed' : 'No' }, { label: 'State', value: (r) => <Status value={bool(r.active) ? 'active' : 'inactive'} /> }, { label: 'Action', value: (r) => <InlineAction label={bool(r.active) ? 'Deactivate' : 'Activate'} url={`/fabric/action/promotion-toggle/${s(r.id)}`} /> }]} /></SectionCard></>;
 }
 
 // ─── WhatsApp Bulk Component ─────────────────────────────────────────────────
 const WA_SERVER = 'http://localhost:3001';
 
-type WaStatus = 'disconnected' | 'qr-pending' | 'connected' | 'reconnecting' | 'unknown';
+type WaStatus = 'authenticated' | 'disconnected' | 'qr-pending' | 'connected' | 'reconnecting' | 'unknown';
 type SendProgress = {
     active: boolean;
     total: number;
@@ -1355,6 +1376,7 @@ function WhatsAppBulk({ p }: { p: Props }) {
                 if (!res.ok) { setWaStatus('disconnected'); return; }
                 const data = await res.json();
                 setWaStatus(data.status as WaStatus);
+                if (data.error) setError(data.error);
                 if (data.hasQr) {
                     const qrRes = await fetch(`${WA_SERVER}/qr`);
                     if (qrRes.ok) {
@@ -1444,18 +1466,21 @@ function WhatsAppBulk({ p }: { p: Props }) {
         if (!message.trim()) { setError('Please enter a message.'); return; }
         if (mediaFile && !mediaFilename) { setError('Media is still uploading. Please wait.'); return; }
 
-        const phones = customers
-            .filter((c) => selected.has(n(c.id)))
-            .map((c) => s(c.normalized_phone || c.phone));
+        const customerIds = customers.filter((c) => selected.has(n(c.id))).map((c) => n(c.id));
+        const phones = customerIds;
 
         setSending(true);
         setProgress({ active: true, total: phones.length, sent: 0, failed: 0, failedNumbers: [], percent: 0, startedAt: null, finishedAt: null });
 
         try {
+            const csrf = decodeURIComponent(document.cookie.split('; ').find(value => value.startsWith('XSRF-TOKEN='))?.slice(11) || '');
+            const authorization = await fetch('/fabric/whatsapp/authorize', { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json', 'X-XSRF-TOKEN': csrf }, body: JSON.stringify({ customer_ids: customerIds, message, mediaFilename }) });
+            const signed = await authorization.json();
+            if (!authorization.ok) { setSending(false); setError(signed.message || 'Recipient authorization failed.'); return; }
             const res = await fetch(`${WA_SERVER}/send-bulk`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ phones, message, mediaFilename }),
+                body: JSON.stringify(signed),
             });
             const data = await res.json();
             if (!res.ok) {
@@ -1481,7 +1506,7 @@ function WhatsAppBulk({ p }: { p: Props }) {
     const someSelected = selected.size > 0;
 
     const statusColor = waStatus === 'connected' ? '#22c55e' : waStatus === 'qr-pending' ? '#f59e0b' : '#ef4444';
-    const statusLabel = waStatus === 'connected' ? 'Connected' : waStatus === 'qr-pending' ? 'Scan QR Code' : waStatus === 'reconnecting' ? 'Reconnecting…' : 'Disconnected';
+    const statusLabel = waStatus === 'connected' ? 'Connected' : waStatus === 'qr-pending' ? 'Scan QR Code' : waStatus === 'authenticated' ? 'Linked; loading chats…' : waStatus === 'reconnecting' ? 'Reconnecting…' : 'Disconnected';
 
     return (
         <div style={{ display: 'grid', gap: '20px' }}>
@@ -1753,19 +1778,18 @@ function Marketing({ p }: { p: Props }) {
     return <>
         <div className="fabric-grid two">
             <SectionCard title="Consent contact"><form className="fabric-form" onSubmit={contact.submit}><ErrorSummary errors={contact.errors} /><Field label="Phone"><input value={contact.data.phone} onChange={(e) => contact.setData({ ...contact.data, phone: e.target.value })} /></Field><Field label="Name"><input value={contact.data.name} onChange={(e) => contact.setData({ ...contact.data, name: e.target.value })} /></Field><label className="fabric-check"><input type="checkbox" checked={bool(contact.data.whatsapp_consent)} onChange={(e) => contact.setData({ ...contact.data, whatsapp_consent: e.target.checked })} /> WhatsApp consent recorded</label><Field label="WhatsApp consent source"><input value={contact.data.whatsapp_consent_source} onChange={(e) => contact.setData({ ...contact.data, whatsapp_consent_source: e.target.value })} /></Field><label className="fabric-check"><input type="checkbox" checked={bool(contact.data.sms_consent)} onChange={(e) => contact.setData({ ...contact.data, sms_consent: e.target.checked })} /> SMS consent recorded</label><Field label="SMS consent source"><input value={contact.data.sms_consent_source} onChange={(e) => contact.setData({ ...contact.data, sms_consent_source: e.target.value })} /></Field><Button type="submit" disabled={contact.processing}>Save contact</Button></form></SectionCard>
-            <SectionCard title="Prepare campaign"><form className="fabric-form" onSubmit={campaign.submit}><ErrorSummary errors={campaign.errors} /><Field label="Campaign name"><input value={campaign.data.name} onChange={(e) => campaign.setData({ ...campaign.data, name: e.target.value })} /></Field><Field label="Channel"><Select value={campaign.data.channel} onChange={(v) => campaign.setData({ ...campaign.data, channel: v })} rows={[{ value: 'whatsapp', label: 'WhatsApp' }, { value: 'sms', label: 'SMS' }]} /></Field><Field label="Message"><textarea value={campaign.data.message} onChange={(e) => campaign.setData({ ...campaign.data, message: e.target.value })} /></Field><Field label="Provider account"><input value={campaign.data.provider} onChange={(e) => campaign.setData({ ...campaign.data, provider: e.target.value })} placeholder="Required only for actual sending" /></Field><Button type="submit" disabled={campaign.processing}>Save draft campaign</Button></form><p className="fabric-help">Actual sending remains disabled until an approved provider connector is configured.</p></SectionCard>
+            <SectionCard title="Prepare campaign"><form className="fabric-form" onSubmit={campaign.submit}><ErrorSummary errors={campaign.errors} /><Field label="Campaign name"><input value={campaign.data.name} onChange={(e) => campaign.setData({ ...campaign.data, name: e.target.value })} /></Field><Field label="Channel"><Select value={campaign.data.channel} onChange={(v) => campaign.setData({ ...campaign.data, channel: v })} rows={[{ value: 'whatsapp', label: 'WhatsApp' }, { value: 'sms', label: 'SMS' }]} /></Field><Field label="Message"><textarea value={campaign.data.message} onChange={(e) => campaign.setData({ ...campaign.data, message: e.target.value })} /></Field><Field label="Provider account"><input value={campaign.data.provider} onChange={(e) => campaign.setData({ ...campaign.data, provider: e.target.value })} placeholder="Required only for actual sending" /></Field><Button type="submit" disabled={campaign.processing}>Save draft campaign</Button></form><p className="fabric-help">Save creates a draft. Owner approval prepares the consenting recipients; it does not send messages. Automated campaigns need a configured provider. For the existing QR-linked option, open WhatsApp Bulk; SMS has no free connector configured.</p></SectionCard>
         </div>
         <SectionCard title="Import contacts"><form className="fabric-form inline" onSubmit={(e) => { e.preventDefault(); importer.post({ file: importer.data.file }, true); }}><input type="file" accept=".csv,text/csv" onChange={(e) => importer.setData({ file: e.target.files?.[0] ?? null })} /><Button type="submit" disabled={!importer.data.file || importer.processing}>Import CSV</Button><span className="fabric-help">Required column: phone. Optional: name. Import never grants or revokes consent.</span></form><ErrorSummary errors={importer.errors} /></SectionCard>
         <SectionCard title="Contacts"><Table rows={p.contacts ?? []} columns={[{ label: 'Phone', value: (r) => s(r.phone) }, { label: 'Name', value: (r) => s(r.name) }, { label: 'WhatsApp', value: (r) => bool(r.whatsapp_consent) ? 'Consented' : 'No consent' }, { label: 'SMS', value: (r) => bool(r.sms_consent) ? 'Consented' : 'No consent' }, { label: 'Opt-out', value: (r) => bool(r.opted_out) ? 'Yes' : 'No' }, { label: 'Action', value: (r) => !bool(r.opted_out) && p.role !== 'cashier' ? <InlineAction label="Opt out" url={`/fabric/action/marketing-optout/${s(r.id)}`} /> : '—' }]} /></SectionCard>
-        <SectionCard title="Campaigns"><Table rows={p.campaigns ?? []} columns={[{ label: 'Campaign', value: (r) => s(r.name) }, { label: 'Channel', value: (r) => s(r.channel) }, { label: 'State', value: (r) => <Status value={r.state} /> }, { label: 'Provider', value: (r) => s(r.provider) || 'Not configured' }, { label: 'Action', value: (r) => p.role === 'owner' && s(r.state) === 'draft' ? <InlineAction label="Approve" url={`/fabric/action/campaign-approve/${s(r.id)}`} /> : p.role === 'owner' && s(r.state) === 'approved' ? <InlineAction label="Try launch" url={`/fabric/campaign/${s(r.id)}/launch`} /> : '—' }]} /></SectionCard>
+        <SectionCard title="Campaigns"><Table rows={p.campaigns ?? []} columns={[{ label: 'Campaign', value: (r) => s(r.name) }, { label: 'Channel', value: (r) => s(r.channel) }, { label: 'State', value: (r) => <Status value={r.state} /> }, { label: 'Provider', value: (r) => s(r.provider) || 'Not configured' }, { label: 'Action', value: (r) => p.role === 'owner' && s(r.state) === 'draft' ? <InlineAction label="Approve" url={`/fabric/action/campaign-approve/${s(r.id)}`} /> : p.role === 'owner' && s(r.state) === 'approved' ? <span title="No approved delivery connector is configured">Blocked: provider setup required</span> : '—' }]} /></SectionCard>
     </>;
 }
 
 function Reports({ p }: { p: Props }) {
     const type = p.report_type ?? 'sales';
-    const currency = s(p.business.currency) || 'PKR';
-    const rows = p.report_rows ?? [];
-    const keys = rows.length ? Object.keys(rows[0]).slice(0, 12) : [];
+    const rows = p.report_display_rows ?? [];
+    const keys = rows.length ? Object.keys(rows[0]) : [];
     const reportTypes = [
         ['sales', 'Sales'], ['purchases', 'Purchases'], ['stock', 'Stock'], ['movements', 'Stock movements'],
         ['customers', 'Customer outstanding'], ['vendors', 'Vendor outstanding'], ['advances', 'Advances / credits'],
@@ -1781,7 +1805,6 @@ function Reports({ p }: { p: Props }) {
                     : [];
     const params = new URLSearchParams({ report: type, from: p.filters.from ?? '', to: p.filters.to ?? '', status: p.filters.status ?? '', customer_id: p.filters.customer_id ?? '', vendor_id: p.filters.vendor_id ?? '', product_id: p.filters.product_id ?? '' });
     const exportHref = (format: 'csv' | 'xlsx') => `/fabric/export/${type}?${new URLSearchParams({ ...Object.fromEntries(params), format }).toString()}`;
-    const moneyKeys = ['amount', 'available', 'original_amount', 'outstanding', 'total', 'paid', 'balance', 'gross', 'discount', 'cost', 'net_sales', 'collections', 'purchases', 'vendor_payments', 'expenses', 'cogs', 'gross_profit', 'net_profit', 'stock_value', 'returns', 'customer_outstanding', 'vendor_outstanding', 'customer_advances', 'vendor_advances', 'customer_credits', 'vendor_credits', 'customer_refunds', 'vendor_returns', 'vendor_refunds'];
     return <>
         <form className="fabric-report-filter" action="/fabric/reports">
             <input type="hidden" name="report" value={type} />
@@ -1796,7 +1819,7 @@ function Reports({ p }: { p: Props }) {
             <a className="fabric-link-button" href={exportHref('csv')}><FileDown size={16} /> CSV</a>
             <a className="fabric-link-button" href={exportHref('xlsx')}><FileDown size={16} /> XLSX</a>
         </form>
-        <SectionCard title={`${reportTypes.find((r) => r.value === type)?.label ?? type} report`}><Table rows={rows} columns={keys.map((key) => ({ label: key.replaceAll('_', ' '), value: (r: Row) => moneyKeys.includes(key) ? money(r[key], currency) : key.endsWith('_at') && r[key] ? new Date(s(r[key])).toLocaleString() : s(r[key]) }))} /></SectionCard>
+        <SectionCard title={`${reportTypes.find((r) => r.value === type)?.label ?? type} report`}><Table rows={rows} columns={keys.map((key) => ({ label: key.replaceAll('_', ' '), value: (r: Row) => s(r[key]) }))} /></SectionCard>
     </>;
 }
 
@@ -1845,7 +1868,7 @@ function Settings({ p }: { p: Props }) {
         {owner && <div className="fabric-grid two"><SectionCard title="Fabric categories"><Table rows={p.categories} columns={[{ label: 'Category', value: (r) => <strong>{s(r.name)}</strong> }, { label: 'State', value: (r) => <Status value={bool(r.active) ? 'active' : 'archived'} /> }, { label: 'Action', value: (r) => <InlineAction label={bool(r.active) ? 'Archive' : 'Reactivate'} url={`/fabric/action/category-toggle/${s(r.id)}`} /> }]} /></SectionCard><SectionCard title="Colors"><Table rows={p.colors} columns={[{ label: 'Color', value: (r) => <strong>{s(r.name)}</strong> }, { label: 'Hex', value: (r) => s(r.hex) || '—' }, { label: 'State', value: (r) => <Status value={bool(r.active) ? 'active' : 'archived'} /> }, { label: 'Action', value: (r) => <InlineAction label={bool(r.active) ? 'Archive' : 'Reactivate'} url={`/fabric/action/color-toggle/${s(r.id)}`} /> }]} /></SectionCard></div>}
         <SectionCard title="Opening balances"><Table rows={p.opening_balances ?? []} columns={[{ label: 'Party', value: (r) => `${s(r.party_type)} #${s(r.party_id)}` }, { label: 'Type', value: (r) => s(r.kind) }, { label: 'Original', value: (r) => money(r.amount, s(p.business.currency)) }, { label: 'Remaining', value: (r) => money(r.remaining, s(p.business.currency)) }, { label: 'Reason', value: (r) => s(r.reason) }]} /></SectionCard>
         {owner && <SectionCard title="Staff accounts"><Table rows={p.staff ?? []} columns={[{ label: 'Name', value: (r) => s(r.name) }, { label: 'Email', value: (r) => s(r.email) }, { label: 'Role', value: (r) => bool(r.is_owner) ? 'Owner' : s(r.fabric_role) }]} /></SectionCard>}
-        <SectionCard title="Fabric audit history"><Table rows={p.audit ?? []} columns={[{ label: 'Date', value: (r) => new Date(s(r.created_at)).toLocaleString() }, { label: 'Entity', value: (r) => s(r.entity) }, { label: 'ID', value: (r) => s(r.entity_id) }, { label: 'Action', value: (r) => s(r.action) }]} /></SectionCard>
+        <SectionCard title="Fabric audit history"><Table rows={p.audit ?? []} columns={[{ label: 'Date', value: (r) => displayDate(s(p.business.timezone) || 'UTC', s(r.created_at)) }, { label: 'Entity', value: (r) => s(r.entity) }, { label: 'ID', value: (r) => s(r.entity_id) }, { label: 'Action', value: (r) => s(r.action) }]} /></SectionCard>
     </>;
 }
 
