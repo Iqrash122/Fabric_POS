@@ -256,6 +256,8 @@ final class FabricController extends Controller
             $data['contacts'] = DB::table('fabric_marketing_contacts')->orderByDesc('id')->limit(200)->get();
             $data['campaigns'] = DB::table('fabric_marketing_campaigns')->orderByDesc('id')->limit(100)->get();
         } elseif ($section === 'whatsapp-bulk') {
+            $data['whatsapp_driver'] = config('whatsapp.driver');
+            $data['meta_whatsapp'] = app(\App\Services\MetaWhatsApp::class)->status();
             // Load all active customers with phone numbers for bulk WhatsApp messaging
             $data['customers'] = DB::table('customers')
                 ->where('active', true)

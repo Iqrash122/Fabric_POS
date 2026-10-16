@@ -21,6 +21,8 @@ Route::middleware(['auth', FabricAccess::class])->group(function () {
     Route::get('/fabric/barcode/{code}', [FabricController::class, 'barcode'])->where('code', '.*');
     Route::get('/fabric/barcode-image/{id}', [FabricController::class, 'barcodeImage'])->whereNumber('id');
     Route::get('/fabric/sale-quote', [FabricController::class, 'saleQuote']);
+    Route::post('/fabric/whatsapp/meta/check', [\App\Http\Controllers\MetaWhatsAppController::class, 'check'])->middleware('throttle:10,1');
+    Route::post('/fabric/whatsapp/meta/test', [\App\Http\Controllers\MetaWhatsAppController::class, 'test'])->middleware('throttle:3,1');
     Route::post('/fabric/whatsapp/authorize', [FabricController::class, 'authorizeWhatsApp'])->middleware('throttle:20,1');
     Route::get('/fabric/export/{type}', [FabricController::class, 'export']);
     Route::get('/fabric/document/{type}/{id}', [FabricController::class, 'document']);
