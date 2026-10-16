@@ -100,6 +100,7 @@ type Props = {
     transfers?: Row[];
     expenses?: Row[];
     promotions?: Row[];
+    active_promotions?: Row[];
     contacts?: Row[];
     campaigns?: Row[];
     report_type?: string;
@@ -122,8 +123,6 @@ const nav = [
     ['cash-bank', 'Cash / Bank', WalletCards],
     ['expenses', 'Expenses', ReceiptText],
     ['promotions', 'Promotions', Tags],
-    ['marketing', 'Marketing', Megaphone],
-    ['whatsapp-bulk', 'WhatsApp Bulk', MessageCircle],
     ['reports', 'Reports', ChartNoAxesCombined],
     ['settings', 'Settings / Audit', Settings2],
 ] as const;
@@ -139,8 +138,6 @@ const sectionMeta: Record<string, { eyebrow: string; description: string }> = {
     'cash-bank': { eyebrow: 'Money movement', description: 'Monitor cash and bank balances, entries and transfers separately from sales and expenses.' },
     expenses: { eyebrow: 'Operating costs', description: 'Record business expenses with account impact, notes and private receipt attachments.' },
     promotions: { eyebrow: 'Pricing campaigns', description: 'Schedule controlled discounts with priority, stacking rules and historical protection.' },
-    marketing: { eyebrow: 'Consent-first outreach', description: 'Maintain opted-in contacts and prepare WhatsApp or SMS campaigns safely.' },
-    'whatsapp-bulk': { eyebrow: 'Bulk messaging', description: 'Send messages to customers with recorded WhatsApp consent. Manage consent and opt-outs in Marketing.' },
     reports: { eyebrow: 'Business intelligence', description: 'Inspect sales, purchases, stock, cash, expenses and profitability with export-ready views.' },
     settings: { eyebrow: 'Administration', description: 'Configure inventory rules, document layouts, opening balances, staff access and audit history.' },
 };
@@ -491,7 +488,16 @@ function Pos({ p }: { p: Props }) {
     const currency = s(p.business.currency) || 'PKR';
     const rollById = useMemo(() => new Map([...p.rolls, ...scannedRolls].map((roll) => [s(roll.id), roll])), [p.rolls, scannedRolls]);
     const cartKey = JSON.stringify(lines);
-    const [quote, setQuote] = useState<{ key: string; total: number; discount: number; line_totals: number[] } | null>(null);
+    const [quote, setQuote] = useState<{
+        key: string;
+        total: number;
+        discount: number;
+        line_totals: number[];
+        line_discounts?: number[];
+        line_promo_discounts?: number[];
+        line_promotions?: Row[][];
+        applied_promotions?: { id: number; name: string; percent: string; total_discount: number }[];
+    } | null>(null);
     const [quoteError, setQuoteError] = useState('');
     const [quoteRevision, setQuoteRevision] = useState(0);
     const quoteReady = lines.length === 0 || quote?.key === cartKey;
@@ -507,13 +513,37 @@ function Pos({ p }: { p: Props }) {
                 const response = await fetch(`/fabric/sale-quote?${params}`, { headers: { Accept: 'application/json' }, signal: controller.signal });
                 const result = await response.json();
                 if (!response.ok) throw new Error(result.message || 'Unable to calculate price. Check quantity and discount.');
-                if (!controller.signal.aborted) setQuote({ key: cartKey, total: result.total, discount: result.discount, line_totals: result.line_totals });
+                if (!controller.signal.aborted) setQuote({
+                    key: cartKey,
+                    total: result.total,
+                    discount: result.discount,
+                    line_totals: result.line_totals,
+                    line_discounts: result.line_discounts,
+                    line_promo_discounts: result.line_promo_discounts,
+                    line_promotions: result.line_promotions,
+                    applied_promotions: result.applied_promotions,
+                });
             } catch (error) {
                 if (!controller.signal.aborted) setQuoteError(error instanceof Error ? error.message : 'Unable to calculate price.');
             }
         }, 150);
         return () => { clearTimeout(timer); controller.abort(); };
     }, [cartKey, lines, quoteRevision]);
+
+    const getRollPromo = (roll: Row) => {
+        const promos = p.active_promotions ?? p.promotions ?? [];
+        if (!promos.length) return null;
+        for (const promo of promos) {
+            const targets = (promo.targets as Row[] | undefined) ?? [];
+            const matches = targets.length === 0 || targets.some((t) => {
+                return (s(t.target_type) === 'product' && s(t.target_id) === s(roll.product_id))
+                    || (s(t.target_type) === 'color' && s(t.target_id) === s(roll.color_id))
+                    || (s(t.target_type) === 'category' && s(t.target_id) === s(roll.category_id));
+            });
+            if (matches) return promo;
+        }
+        return null;
+    };
 
     const filteredRolls = useMemo(() => {
         const term = rollSearch.toLowerCase().trim();
@@ -692,6 +722,48 @@ function Pos({ p }: { p: Props }) {
     const changeReturn = tenderedTotal > estTotalMajor && estimated > 0 ? tenderedTotal - estTotalMajor : 0;
 
     return <div className="fabric-grid pos-grid">
+        {(p.active_promotions && p.active_promotions.length > 0) && (
+            <div style={{
+                gridColumn: '1 / -1',
+                background: 'linear-gradient(135deg, rgba(16, 185, 129, 0.12), rgba(5, 150, 105, 0.08))',
+                border: '1px solid rgba(16, 185, 129, 0.4)',
+                borderRadius: '8px',
+                padding: '12px 16px',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                flexWrap: 'wrap',
+                gap: '12px',
+                marginBottom: '8px'
+            }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                    <span style={{ fontSize: '22px' }}>🎉</span>
+                    <div>
+                        <strong style={{ color: '#047857', fontSize: '14px', display: 'block' }}>
+                            {p.active_promotions.length === 1 ? 'Active Promotion' : 'Active Promotions'}: {p.active_promotions.map((pr) => `${s(pr.name)} (${n(pr.percent)}% OFF)`).join(' · ')}
+                        </strong>
+                        <small style={{ color: 'var(--text-2)', fontSize: '12px' }}>
+                            Automatically applied to eligible rolls. {p.active_promotions.map((pr) => `Valid until ${displayDate(s(p.business.timezone) || 'UTC', s(pr.ends_at))}`).join(' | ')}
+                        </small>
+                    </div>
+                </div>
+                <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+                    {p.active_promotions.map((pr) => (
+                        <span key={s(pr.id)} style={{
+                            background: '#10b981',
+                            color: '#ffffff',
+                            fontWeight: 700,
+                            fontSize: '11px',
+                            padding: '4px 10px',
+                            borderRadius: '20px',
+                            boxShadow: '0 1px 2px rgba(0,0,0,0.1)'
+                        }}>
+                            🏷️ {s(pr.name)} · {n(pr.percent)}% OFF
+                        </span>
+                    ))}
+                </div>
+            </div>
+        )}
         <SectionCard title="Scan & add fabric" aside={<span className="fabric-pill"><Barcode size={14} /> exact roll tracking</span>}>
             <div className="fabric-scan">
                 <input ref={barcodeInput} autoFocus disabled={processing} aria-label="Barcode or search" aria-describedby="scanner-help" autoComplete="off" value={barcode} onChange={(e) => { barcodeValue.current = e.target.value; setBarcode(e.target.value); }} onKeyDown={(e) => { if ((e.key === 'Enter' || e.key === 'Tab') && barcodeValue.current.trim()) { e.preventDefault(); scan(); } }} placeholder="Scan barcode, roll #, or product name" />
@@ -715,13 +787,23 @@ function Pos({ p }: { p: Props }) {
                         <small>{sellable.length === 0 ? 'No sellable rolls in stock. Receive goods in Purchases or add Opening Stock.' : 'No rolls match your search term.'}</small>
                     </div>
                 ) : (
-                    filteredRolls.map((roll) => (
-                        <button type="button" key={s(roll.id)} onClick={() => addRoll(roll)}>
-                            <span>{s(roll.product_name)} · {s(roll.color_name)}</span>
-                            <strong>{s(roll.roll_number)}</strong>
-                            <small>{qty(roll.available_qty_milli, s(roll.unit))} available</small>
-                        </button>
-                    ))
+                    filteredRolls.map((roll) => {
+                        const promo = getRollPromo(roll);
+                        return (
+                            <button type="button" key={s(roll.id)} onClick={() => addRoll(roll)}>
+                                <span style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}>
+                                    <span>{s(roll.product_name)} · {s(roll.color_name)}</span>
+                                    {promo && (
+                                        <span style={{ background: '#ecfdf5', color: '#059669', border: '1px solid #10b981', fontSize: '9px', fontWeight: 700, padding: '1px 5px', borderRadius: '4px', whiteSpace: 'nowrap' }}>
+                                            🏷️ {n(promo.percent)}% OFF
+                                        </span>
+                                    )}
+                                </span>
+                                <strong>{s(roll.roll_number)}</strong>
+                                <small>{qty(roll.available_qty_milli, s(roll.unit))} available</small>
+                            </button>
+                        );
+                    })
                 )}
             </div>
         </SectionCard>
@@ -762,6 +844,9 @@ function Pos({ p }: { p: Props }) {
                         const roll = rollById.get(line.roll_id) ?? {};
                         const maxAvail = n(roll.available_qty_milli) / 1000;
                         const lineSubtotal = quoteReady ? (quote?.line_totals[index] ?? 0) / 100 : 0;
+                        const linePromoDiscount = quoteReady ? (quote?.line_promo_discounts?.[index] ?? 0) : 0;
+                        const linePromos = quoteReady ? (quote?.line_promotions?.[index] ?? []) : [];
+                        const lineGross = n(line.quantity) * (Number(line.unit_price) || 0) * 100;
                         return (
                             <div className="pos-line" key={line.roll_id}>
                                 <div>
@@ -775,6 +860,26 @@ function Pos({ p }: { p: Props }) {
                                     >
                                         Full Roll ({qty(roll.available_qty_milli, s(roll.unit))})
                                     </button>
+                                    {linePromoDiscount > 0 && (
+                                        <div style={{ marginTop: '4px', display: 'flex', gap: '4px', flexWrap: 'wrap' }}>
+                                            {linePromos.map((pr: Row, pIdx: number) => (
+                                                <span key={pIdx} style={{
+                                                    background: '#ecfdf5',
+                                                    color: '#047857',
+                                                    border: '1px solid #a7f3d0',
+                                                    fontSize: '10px',
+                                                    fontWeight: 600,
+                                                    padding: '1px 6px',
+                                                    borderRadius: '4px',
+                                                    display: 'inline-flex',
+                                                    alignItems: 'center',
+                                                    gap: '2px'
+                                                }}>
+                                                    🏷️ {s(pr.name)} ({n(pr.percent)}%): -{money(pr.discount, currency)}
+                                                </span>
+                                            ))}
+                                        </div>
+                                    )}
                                 </div>
                                 <div className="pos-qty-wrap">
                                     <button
@@ -815,13 +920,27 @@ function Pos({ p }: { p: Props }) {
                                     value={line.unit_price}
                                     onChange={(e) => setLines((current) => current.map((item, i) => i === index ? { ...item, unit_price: e.target.value } : item))}
                                 />
-                                <input
-                                    aria-label="Manual discount"
-                                    placeholder="0.00"
-                                    value={line.manual_discount}
-                                    onChange={(e) => setLines((current) => current.map((item, i) => i === index ? { ...item, manual_discount: e.target.value } : item))}
-                                />
-                                <span className="pos-line-total">{money(Math.round(lineSubtotal * 100), currency)}</span>
+                                <div>
+                                    <input
+                                        aria-label="Manual discount"
+                                        placeholder="0.00"
+                                        value={line.manual_discount}
+                                        onChange={(e) => setLines((current) => current.map((item, i) => i === index ? { ...item, manual_discount: e.target.value } : item))}
+                                    />
+                                    {linePromoDiscount > 0 && (
+                                        <small style={{ fontSize: '10px', color: '#059669', fontWeight: 600, display: 'block', marginTop: '2px' }}>
+                                            +{money(linePromoDiscount, currency)} promo
+                                        </small>
+                                    )}
+                                </div>
+                                <div style={{ textAlign: 'right' }}>
+                                    <span className="pos-line-total">{money(Math.round(lineSubtotal * 100), currency)}</span>
+                                    {linePromoDiscount > 0 && (
+                                        <small style={{ display: 'block', fontSize: '11px', color: 'var(--text-2)', textDecoration: 'line-through' }}>
+                                            {money(Math.round(lineGross), currency)}
+                                        </small>
+                                    )}
+                                </div>
                                 <button type="button" aria-label="Remove line" onClick={() => setLines((current) => current.filter((_, i) => i !== index))}>
                                     <X size={16} />
                                 </button>
@@ -886,11 +1005,39 @@ function Pos({ p }: { p: Props }) {
                 <textarea value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Required when manual discount is used" />
             </Field>
             <ErrorSummary errors={errors} />
+            {quoteReady && quote && quote.applied_promotions && quote.applied_promotions.length > 0 && (
+                <div style={{
+                    background: '#ecfdf5',
+                    border: '1px solid #a7f3d0',
+                    borderRadius: '8px',
+                    padding: '10px 14px',
+                    marginTop: '10px',
+                    marginBottom: '10px'
+                }}>
+                    <div style={{ fontWeight: 700, color: '#065f46', fontSize: '12px', marginBottom: '4px' }}>
+                        🎉 Applied Promotions:
+                    </div>
+                    {quote.applied_promotions.map((prm) => (
+                        <div key={prm.id} style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px', color: '#047857' }}>
+                            <span>🏷️ {prm.name} ({n(prm.percent)}%)</span>
+                            <strong>-{money(prm.total_discount, currency)}</strong>
+                        </div>
+                    ))}
+                    {quote.discount > 0 && (
+                        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px', fontWeight: 700, color: '#065f46', borderTop: '1px dashed #6ee7b7', paddingTop: '4px', marginTop: '4px' }}>
+                            <span>Total Savings:</span>
+                            <span>-{money(quote.discount, currency)}</span>
+                        </div>
+                    )}
+                </div>
+            )}
             <div className="pos-total">
                 <span>Total after discounts</span>
                 <strong>{quoteReady ? money(estimated, currency) : 'Calculating…'}</strong>
             </div>
-            {quoteReady && quote && quote.discount > 0 && <p className="fabric-help">Discount applied: {money(quote.discount, currency)}</p>}
+            {quoteReady && quote && quote.discount > 0 && (!quote.applied_promotions || quote.applied_promotions.length === 0) && (
+                <p className="fabric-help">Discount applied: {money(quote.discount, currency)}</p>
+            )}
             {quoteError && <p role="alert">{quoteError}</p>}
             <label className="fabric-check"><input type="checkbox" checked={autoPrint} onChange={(e) => setAutoPrint(e.target.checked)} /> Print receipt after sale</label>
             <Button onClick={submit} disabled={processing || scanning || !quoteReady || lines.length === 0}>
@@ -1305,14 +1452,18 @@ function PromotionForm({ p, row }: { p: Props; row?: Row }) {
     const firstType = s(existingTargets[0]?.target_type);
     const initial = {
         name: s(row?.name), percent: s(row?.percent), starts_at: row?.starts_at ? localInput(s(p.business.timezone) || 'UTC', s(row.starts_at)) : localInput(s(p.business.timezone) || 'UTC'),
-        ends_at: row?.ends_at ? localInput(s(p.business.timezone) || 'UTC', s(row.ends_at)) : localInput(s(p.business.timezone) || 'UTC', new Date(Date.now() + 7 * 86400000).toISOString()),
+        ends_at: row?.ends_at ? localInput(s(p.business.timezone) || 'UTC', s(row.ends_at)) : (() => {
+            const d = new Date(Date.now() + 7 * 86400000);
+            const dateStr = localInput(s(p.business.timezone) || 'UTC', d.toISOString()).split('T')[0];
+            return `${dateStr}T23:59`;
+        })(),
         priority: s(row?.priority || '100'), stackable: row ? bool(row.stackable) : false, active: row ? bool(row.active) : true,
         target_type: firstType, target_ids: existingTargets.filter((t) => s(t.target_type) === firstType).map((t) => s(t.target_id)),
     };
     const a = useAction(initial, row ? `/fabric/action/promotion-save/${s(row.id)}` : '/fabric/action/promotion-save', () => router.reload());
     const targetRows = a.data.target_type === 'product' ? p.products : a.data.target_type === 'category' ? p.categories : a.data.target_type === 'color' ? p.colors : [];
     const submit = (e: FormEvent) => { e.preventDefault(); a.post({ ...a.data, targets: a.data.target_type ? a.data.target_ids.map((id) => ({ type: a.data.target_type, id })) : [] }); };
-    return <form className="fabric-form" onSubmit={submit} ref={a.formRef}><ErrorSummary errors={a.errors} /><div className="fabric-form-grid two"><Field label="Name"><input value={a.data.name} onChange={(e) => a.setData({ ...a.data, name: e.target.value })} /></Field><Field label="Discount %"><input value={a.data.percent} onChange={(e) => a.setData({ ...a.data, percent: e.target.value })} /></Field><Field label="Starts"><input type="datetime-local" value={a.data.starts_at} onChange={(e) => a.setData({ ...a.data, starts_at: e.target.value })} /></Field><Field label="Ends"><input type="datetime-local" value={a.data.ends_at} onChange={(e) => a.setData({ ...a.data, ends_at: e.target.value })} /></Field><Field label="Priority"><input type="number" value={a.data.priority} onChange={(e) => a.setData({ ...a.data, priority: e.target.value })} /></Field><Field label="Target group"><Select value={a.data.target_type} onChange={(v) => a.setData({ ...a.data, target_type: v, target_ids: [] })} rows={[{ value: 'product', label: 'Selected products' }, { value: 'category', label: 'Selected categories' }, { value: 'color', label: 'Selected colors' }]} placeholder="All fabric" /></Field></div>{a.data.target_type && <Field label="Promotion targets" hint="Select one or more. Ctrl/Cmd-click on desktop for multiple items."><select multiple size={Math.min(7, Math.max(3, targetRows.length))} value={a.data.target_ids} onChange={(e) => a.setData({ ...a.data, target_ids: Array.from(e.currentTarget.selectedOptions, (option) => option.value) })}>{targetRows.filter((r) => bool(r.active) || a.data.target_ids.includes(s(r.id))).map((r) => <option key={s(r.id)} value={s(r.id)}>{s(r.name)}</option>)}</select></Field>}<label className="fabric-check"><input type="checkbox" checked={bool(a.data.stackable)} onChange={(e) => a.setData({ ...a.data, stackable: e.target.checked })} /> Allow stacking with lower-priority promotions</label><label className="fabric-check"><input type="checkbox" checked={bool(a.data.active)} onChange={(e) => a.setData({ ...a.data, active: e.target.checked })} /> Promotion active</label><p className="fabric-help">Changing a promotion affects future pricing only. Posted sale lines retain the promotion snapshot used when the invoice was created.</p><Button type="submit" disabled={a.processing}>{a.processing ? 'Saving…' : row ? 'Save promotion changes' : 'Create promotion'}</Button></form>;
+    return <form className="fabric-form" onSubmit={submit} ref={a.formRef}><ErrorSummary errors={a.errors} /><div className="fabric-form-grid two"><Field label="Name"><input value={a.data.name} onChange={(e) => a.setData({ ...a.data, name: e.target.value })} /></Field><Field label="Discount %"><input value={a.data.percent} onChange={(e) => a.setData({ ...a.data, percent: e.target.value })} /></Field><Field label="Starts"><input type="datetime-local" value={a.data.starts_at} onChange={(e) => a.setData({ ...a.data, starts_at: e.target.value })} /></Field><Field label="Ends" hint="Set to 23:59 to cover the full closing day."><input type="datetime-local" value={a.data.ends_at} onChange={(e) => a.setData({ ...a.data, ends_at: e.target.value })} /></Field><Field label="Priority"><input type="number" value={a.data.priority} onChange={(e) => a.setData({ ...a.data, priority: e.target.value })} /></Field><Field label="Target group"><Select value={a.data.target_type} onChange={(v) => a.setData({ ...a.data, target_type: v, target_ids: [] })} rows={[{ value: 'product', label: 'Selected products' }, { value: 'category', label: 'Selected categories' }, { value: 'color', label: 'Selected colors' }]} placeholder="All fabric" /></Field></div>{a.data.target_type && <Field label="Promotion targets" hint="Select one or more. Ctrl/Cmd-click on desktop for multiple items."><select multiple size={Math.min(7, Math.max(3, targetRows.length))} value={a.data.target_ids} onChange={(e) => a.setData({ ...a.data, target_ids: Array.from(e.currentTarget.selectedOptions, (option) => option.value) })}>{targetRows.filter((r) => bool(r.active) || a.data.target_ids.includes(s(r.id))).map((r) => <option key={s(r.id)} value={s(r.id)}>{s(r.name)}</option>)}</select></Field>}<label className="fabric-check"><input type="checkbox" checked={bool(a.data.stackable)} onChange={(e) => a.setData({ ...a.data, stackable: e.target.checked })} /> Allow stacking with lower-priority promotions</label><label className="fabric-check"><input type="checkbox" checked={bool(a.data.active)} onChange={(e) => a.setData({ ...a.data, active: e.target.checked })} /> Promotion active</label><p className="fabric-help">Changing a promotion affects future pricing only. Posted sale lines retain the promotion snapshot used when the invoice was created.</p><Button type="submit" disabled={a.processing}>{a.processing ? 'Saving…' : row ? 'Save promotion changes' : 'Create promotion'}</Button></form>;
 }
 function PromotionEditor({ p }: { p: Props }) {
     const [selected, setSelected] = useState('');
@@ -1887,8 +2038,6 @@ export default function FabricIndex(p: Props) {
         case 'cash-bank': content = <CashBank p={p} />; break;
         case 'expenses': content = <Expenses p={p} />; break;
         case 'promotions': content = <Promotions p={p} />; break;
-        case 'marketing': content = <Marketing p={p} />; break;
-        case 'whatsapp-bulk': content = p.whatsapp_driver === 'meta' ? <MetaWhatsApp status={p.meta_whatsapp ?? { configured: false, test_ready: false, missing: [] }} owner={p.role === 'owner'} /> : <WhatsAppBulk p={p} />; break;
         case 'reports': content = <Reports p={p} />; break;
         case 'settings': content = <Settings p={p} />; break;
         default: content = <Dashboard p={p} />;

@@ -963,6 +963,10 @@ final class FabricInventory
     {
         $total = $discount = $grossTotal = 0;
         $lineTotals = [];
+        $lineDiscounts = [];
+        $linePromoDiscounts = [];
+        $linePromotions = [];
+        $allAppliedPromos = [];
         foreach ($lines as $line) {
             $roll = DB::table('fabric_rolls')->where('id', (int) $line['roll_id'])->firstOrFail();
             $product = DB::table('fabric_products')->where('active', true)->where('id', $roll->product_id)->firstOrFail();
@@ -970,14 +974,39 @@ final class FabricInventory
             $rate = isset($line['unit_price']) && $line['unit_price'] !== '' ? Pricing::minor($line['unit_price']) : (int) $roll->selling_price;
             $gross = self::amountForQty($rate, $quantity);
             $promo = self::promotionDiscount($product, (int) $roll->color_id, $gross, now());
-            $lineDiscount = $promo['discount'] + Pricing::minor($line['manual_discount'] ?? '0');
+            $manualDiscount = Pricing::minor($line['manual_discount'] ?? '0');
+            $lineDiscount = $promo['discount'] + $manualDiscount;
             if ($lineDiscount > $gross) self::fail('Discount exceeds the line amount.');
             $grossTotal += $gross;
             $discount += $lineDiscount;
             $total += $gross - $lineDiscount;
             $lineTotals[] = $gross - $lineDiscount;
+            $lineDiscounts[] = $lineDiscount;
+            $linePromoDiscounts[] = $promo['discount'];
+            $linePromotions[] = $promo['snapshots'];
+            foreach ($promo['snapshots'] as $snap) {
+                $pid = $snap['id'];
+                if (! isset($allAppliedPromos[$pid])) {
+                    $allAppliedPromos[$pid] = [
+                        'id' => $snap['id'],
+                        'name' => $snap['name'],
+                        'percent' => $snap['percent'],
+                        'total_discount' => 0,
+                    ];
+                }
+                $allAppliedPromos[$pid]['total_discount'] += $snap['discount'];
+            }
         }
-        return ['total' => $total, 'discount' => $discount, 'gross' => $grossTotal, 'line_totals' => $lineTotals];
+        return [
+            'total' => $total,
+            'discount' => $discount,
+            'gross' => $grossTotal,
+            'line_totals' => $lineTotals,
+            'line_discounts' => $lineDiscounts,
+            'line_promo_discounts' => $linePromoDiscounts,
+            'line_promotions' => $linePromotions,
+            'applied_promotions' => array_values($allAppliedPromos),
+        ];
     }
 
     /** @param array<string,mixed> $data */
@@ -2032,7 +2061,15 @@ final class FabricInventory
             self::fail('Promotion percentage must be between 0 and 100.', 'percent');
         }
         $starts = self::date($data['starts_at']);
-        $ends = self::date($data['ends_at']);
+        $rawEnds = trim((string) $data['ends_at']);
+        $tz = BusinessSetting::findOrFail(1)->timezone;
+        if (preg_match('/^\d{4}-\d{2}-\d{2}$/', $rawEnds)) {
+            $ends = Carbon::parse($rawEnds, $tz)->endOfDay()->utc();
+        } elseif (preg_match('/^\d{4}-\d{2}-\d{2}[T ]00:00(?::00)?$/', $rawEnds)) {
+            $ends = Carbon::parse(substr($rawEnds, 0, 10), $tz)->endOfDay()->utc();
+        } else {
+            $ends = self::date($rawEnds);
+        }
         if ($ends->lte($starts)) {
             self::fail('Promotion end must be after its start.');
         }

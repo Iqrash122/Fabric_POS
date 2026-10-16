@@ -111,6 +111,16 @@ final class FabricController extends Controller
             'rolls' => $rolls,
             'vendors' => $role === 'cashier' ? collect() : DB::table('fabric_vendors')->orderBy('shop_name')->get(),
             'customers' => DB::table('customers')->where('active', true)->orderBy('name')->get(['id', 'name', 'phone']),
+            'active_promotions' => DB::table('fabric_promotions')
+                ->where('active', true)
+                ->where('starts_at', '<=', now())
+                ->where('ends_at', '>=', now())
+                ->orderBy('priority')
+                ->get()
+                ->map(function ($promotion) {
+                    $promotion->targets = DB::table('fabric_promotion_targets')->where('promotion_id', $promotion->id)->get();
+                    return $promotion;
+                }),
             'success' => $request->session()->get('success'),
             'last_sale_id' => $request->session()->get('last_sale_id'),
         ];
@@ -161,6 +171,7 @@ final class FabricController extends Controller
                 ->map(function ($row) { $row->display_status = $this->installmentDisplayStatus($row); return $row; });
         } elseif ($section === 'pos') {
             $data['sales'] = $this->salesQuery($request)->limit(50)->get()->map(function ($row) { $row->current_balance = FabricInventory::saleOutstanding((int) $row->id); return $row; });
+            $data['promotions'] = $data['active_promotions'];
         } elseif ($section === 'customers') {
             $customers = DB::table('customers')->where('active', true)->orderBy('name')->get(['id', 'name', 'phone', 'address']);
             foreach ($customers as $customer) {
